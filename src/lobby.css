@@ -1,0 +1,468 @@
+/* Pixel fonts (Google Fonts). If you hate external imports, download and self-host. */
+@import url('https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap');
+
+:root {
+    --bg: #05060f;
+    --panel: rgba(0, 0, 0, 0.55);
+    --panel-strong: rgba(0, 0, 0, 0.70);
+    --text: rgba(255, 255, 255, 0.92);
+    --muted: rgba(255, 255, 255, 0.70);
+    --border: rgba(90, 160, 255, 0.35);
+
+    --pac: #ffe14a;          /* Pac yellow */
+    --maze: #2e6bff;         /* Pac maze blue */
+    --pink: #ff52d6;         /* ghost-ish */
+    --cyan: #45f3ff;         /* ghost-ish */
+    --red: #ff3b4a;          /* ghost-ish */
+    --ready: #35ff76;
+    --notReady: #ff3b4a;
+
+    --shadow: 0 18px 55px rgba(0, 0, 0, 0.6);
+    --radius: 14px;
+    --pixel: "Silkscreen", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+    --mono: "VT323", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+body {
+    margin: 0;
+    color: var(--text);
+    font-family: var(--pixel), serif;
+    background-color: var(--bg);
+
+    /* Replace this with your own background image if you want:
+       background-image: url("/images/pac-lobby-bg.png"), ...; */
+    background-image:
+        /* optional image layer (commented out by default) */
+        /* url("/images/pac-lobby-bg.png"), */
+
+        /* star speckles */
+            radial-gradient(circle at 12px 18px, rgba(255,255,255,0.18) 1px, transparent 2px),
+            radial-gradient(circle at 42px 60px, rgba(255,255,255,0.12) 1px, transparent 2px),
+            radial-gradient(circle at 80px 30px, rgba(255,255,255,0.10) 1px, transparent 2px),
+
+                /* maze-ish grid glow */
+            linear-gradient(90deg, rgba(46,107,255,0.12) 1px, transparent 1px),
+            linear-gradient(0deg, rgba(46,107,255,0.12) 1px, transparent 1px),
+
+                /* deep vignette */
+            radial-gradient(900px 650px at 50% 25%, rgba(46,107,255,0.18), transparent 60%),
+            radial-gradient(900px 650px at 50% 90%, rgba(255,82,214,0.10), transparent 60%);
+
+    background-size:
+        /* image layer */
+        /* cover, */
+
+        /* stars */
+            140px 120px,
+            180px 160px,
+            220px 200px,
+
+                /* grid */
+            48px 48px,
+            48px 48px,
+
+                /* vignettes */
+            100% 100%,
+            100% 100%;
+
+    background-position:
+        /* image layer */
+        /* center, */
+
+            0 0,
+            0 0,
+            0 0,
+
+            0 0,
+            0 0,
+
+            center,
+            center;
+
+    image-rendering: pixelated;
+}
+
+.lobby {
+    min-height: 100vh;
+    padding: 26px;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 16px;
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+/* Header */
+.lobby__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px;
+    border-radius: var(--radius);
+    background: var(--panel);
+    border: 2px solid rgba(46,107,255,0.35);
+    box-shadow: var(--shadow);
+
+    position: relative;
+    overflow: hidden;
+}
+
+.lobby__header::before {
+    /* subtle CRT scanline overlay */
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+            to bottom,
+            rgba(255,255,255,0.04) 0px,
+            rgba(255,255,255,0.04) 1px,
+            transparent 2px,
+            transparent 6px
+    );
+    opacity: 0.22;
+    pointer-events: none;
+}
+
+.lobby__title {
+    margin: 0;
+    font-size: 2rem;
+    letter-spacing: 0.6px;
+    color: rgba(255,255,255,0.95);
+    text-shadow:
+            0 0 12px rgba(46,107,255,0.35),
+            0 0 22px rgba(255,82,214,0.18);
+}
+
+.lobby__subtitle {
+    margin: 10px 0 0 0;
+    font-size: 1rem;
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.lobby__meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 1;
+}
+
+.lobby__code {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px;
+    background: rgba(0,0,0,0.55);
+    border: 2px solid rgba(255,225,74,0.35);
+    border-radius: 12px;
+    min-width: 170px;
+    text-align: right;
+    box-shadow:
+            0 0 0 3px rgba(255,225,74,0.08),
+            0 0 18px rgba(255,225,74,0.10);
+}
+
+.lobby__codeLabel {
+    font-size: 0.5rem;
+    color: rgba(255,225,74,0.85);
+    letter-spacing: 1px;
+}
+
+.lobby__codeValue {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,0.95);
+}
+
+/* Layout */
+.lobby__content {
+    display: grid;
+    grid-template-columns: 1.6fr 0.9fr;
+    gap: 16px;
+}
+
+@media (max-width: 860px) {
+    .lobby__content { grid-template-columns: 1fr; }
+}
+
+/* Panels */
+.panel {
+    background: var(--panel);
+    border: 2px solid rgba(46,107,255,0.35);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    position: relative;
+}
+
+.panel::after {
+    /* corner glow */
+    content: "";
+    position: absolute;
+    inset: -30px;
+    background: radial-gradient(circle at 20% 10%, rgba(46,107,255,0.18), transparent 45%),
+    radial-gradient(circle at 90% 30%, rgba(255,82,214,0.10), transparent 50%);
+    pointer-events: none;
+}
+
+.panel__header {
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 2px solid rgba(46,107,255,0.22);
+    background: rgba(0,0,0,0.45);
+    position: relative;
+    z-index: 1;
+}
+
+.panel__title {
+    margin: 0;
+    font-size: 1.2rem;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,0.92);
+}
+
+.panel__pill {
+    font-family: var(--mono);
+    font-size: 1.2rempx;
+    color: rgba(255,225,74,0.95);
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 2px solid rgba(255,225,74,0.35);
+    background: rgba(0,0,0,0.55);
+    box-shadow: 0 0 16px rgba(255,225,74,0.12);
+    position: relative;
+    z-index: 1;
+}
+
+/* Player list */
+.playerList {
+    list-style: none;
+    margin: 0;
+    padding: 12px;
+    display: grid;
+    gap: 10px;
+    position: relative;
+    z-index: 1;
+}
+
+.playerRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 12px;
+    border-radius: 14px;
+    background: rgba(0,0,0,0.55);
+    border: 2px solid rgba(46,107,255,0.22);
+    box-shadow:
+            0 0 0 3px rgba(46,107,255,0.06),
+            0 10px 28px rgba(0,0,0,0.45);
+}
+
+.playerRow:hover {
+    border-color: rgba(46,107,255,0.40);
+    box-shadow:
+            0 0 0 3px rgba(46,107,255,0.10),
+            0 0 22px rgba(46,107,255,0.10),
+            0 10px 28px rgba(0,0,0,0.45);
+}
+
+.playerRow__left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.playerName {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* HOST badge */
+.playerRow--ready {
+    border-color: mediumseagreen;
+    box-shadow:
+            0 0 0 3px rgba(255,82,214,0.08),
+            0 0 22px rgba(255,82,214,0.10),
+            0 10px 28px rgba(0,0,0,0.45);
+}
+
+.hostBadge {
+    font-size: 10px;
+    padding: 6px 8px;
+    border-radius: 999px;
+    border: 2px solid rgba(255,82,214,0.40);
+    color: rgba(255,82,214,0.95);
+    background: rgba(0,0,0,0.55);
+    box-shadow: 0 0 14px rgba(255,82,214,0.12);
+}
+
+/* Ready status dot becomes a Pac-Man dot vibe */
+.statusDot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    display: inline-block;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.06);
+    position: relative;
+}
+
+.statusDot::after {
+    /* extra glow */
+    content: "";
+    position: absolute;
+    inset: -6px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(255,255,255,0.14), transparent 60%);
+    opacity: 0.7;
+}
+
+.statusDot--ready { background: var(--ready); }
+.statusDot--notReady { background: var(--notReady); }
+
+.playerRow__right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+/* Status tags look like arcade UI labels */
+.playerTag {
+    font-family: var(--pixel);
+    font-size: 1.2rem;
+    padding: 8px 10px;
+    border-radius: 999px;
+    border: 2px solid rgba(255,255,255,0.14);
+    background: rgba(0,0,0,0.55);
+    letter-spacing: 1px;
+}
+
+.playerTag--ready {
+    border-color: rgba(53,255,118,0.45);
+    color: rgba(210,255,232,0.95);
+    box-shadow: 0 0 16px rgba(53,255,118,0.10);
+}
+
+.playerTag--notReady {
+    border-color: rgba(255,59,74,0.45);
+    color: rgba(255,220,224,0.95);
+    box-shadow: 0 0 16px rgba(255,59,74,0.10);
+}
+
+/* Side panel actions */
+.panel--side .actions {
+    padding: 16px;
+    display: grid;
+    gap: 12px;
+    position: relative;
+    z-index: 1;
+}
+
+/* Arcade buttons */
+.btn {
+    appearance: none;
+    border: 2px solid rgba(255,255,255,0.18);
+    border-radius: 14px;
+    padding: 14px 14px;
+    cursor: pointer;
+
+    font-family: var(--pixel);
+    font-size: 1.2rem;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+
+    color: rgba(255,255,255,0.92);
+    background: rgba(0,0,0,0.55);
+    box-shadow:
+            0 10px 22px rgba(0,0,0,0.45),
+            inset 0 0 0 3px rgba(255,255,255,0.04);
+}
+
+.btn:hover {
+    border-color: rgba(255,255,255,0.28);
+    box-shadow:
+            0 0 20px rgba(255,255,255,0.06),
+            0 10px 22px rgba(0,0,0,0.45),
+            inset 0 0 0 3px rgba(255,255,255,0.06);
+}
+
+.btn:active { transform: translateY(1px); }
+
+.btn--primary {
+    border-color: rgba(255,225,74,0.55);
+    color: rgba(255,225,74,0.95);
+    box-shadow:
+            0 0 0 3px rgba(255,225,74,0.08),
+            0 12px 26px rgba(0,0,0,0.55),
+            inset 0 0 0 3px rgba(255,225,74,0.06);
+}
+
+.btn--primary:hover {
+    border-color: rgba(255,225,74,0.75);
+    box-shadow:
+            0 0 22px rgba(255,225,74,0.14),
+            0 12px 26px rgba(0,0,0,0.55),
+            inset 0 0 0 3px rgba(255,225,74,0.08);
+}
+
+.btn--ghost {
+    border-color: rgba(46,107,255,0.40);
+    color: rgba(69,243,255,0.95);
+}
+
+/* Hint box becomes "arcade instruction card" */
+.hint {
+    margin-top: 6px;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(0,0,0,0.55);
+    border: 2px solid rgba(46,107,255,0.26);
+    box-shadow: 0 0 18px rgba(46,107,255,0.08);
+}
+
+.hint__title {
+    margin: 0 0 8px 0;
+    font-size: 1rem;
+    color: rgba(69,243,255,0.9);
+    letter-spacing: 2px;
+}
+
+.hint__text {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 1rem;
+    color: rgba(255,255,255,0.78);
+    line-height: 1.25;
+}
+
+/* Footer */
+.lobby__footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 4px;
+    color: rgba(255,255,255,0.70);
+}
+
+.smallText {
+    font-family: var(--mono);
+    font-size: 1rem;
+    letter-spacing: 0.3px;
+}
+
+/* Accessibility: reduce motion-friendly (we're not animating much anyway) */
+@media (prefers-reduced-motion: reduce) {
+    .btn:active { transform: none; }
+}

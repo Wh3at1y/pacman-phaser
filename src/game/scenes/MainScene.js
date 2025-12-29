@@ -1,107 +1,99 @@
 import Phaser from 'phaser';
-import { level1 } from '../levels/level1';
+import {level1} from '../levels/level1';
 
 const TILE_SIZE = 24;
 
-const DIRECTIONS = {
-    LEFT:  { x: -1, y: 0 },
-    RIGHT: { x: 1,  y: 0 },
-    UP:    { x: 0,  y: -1 },
-    DOWN:  { x: 0,  y: 1 }
-};
-
-const WALLS = ["═","║","╔","╗","╚","╝","┌","┐","└","┘","|","-"];
+const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
 
 export default class MainScene extends Phaser.Scene {
-    constructor() {
+    constructor(onHudUpdate) {
         super('MainScene');
+        this.onHudUpdate = onHudUpdate; // may be undefined if not provided
     }
 
     preload() {
-        this.load.audio('roundStart', 'start.mp3', {volume: 0});
+        this.load.audio('roundStart', 'start.mp3');
         this.load.audio('eat', 'eating.mp3');
     }
 
     create() {
         this.cameras.main.setZoom(1);
 
-        /* ---------------- ROUND STATE ---------------- */
-        this.round = 1;
-        this.roundDelay = 2500;
+        // ---- ROUND STATE ----
+        this.round = this.registry.get("round") ?? 1;
+        this.registry.set("round", this.round);
         this.isRoundActive = false;
 
-        this.originalLevel = level1.map(r => [...r]);
-
-        /* ---------------- DOTS ---------------- */
-        this.dots = this.add.group();
-        this.dotPositions = [];
+        // ---- DOT TRACKING ----
         this.dotsRemaining = 0;
-        this.dotsCollected = 0;
+        this.dots = this.add.group();
 
-        this.buildDotList();
-        this.drawDots();
+        // ---- BUILD MAP LOGIC ----
+        this.passable = [];
 
-        /* ---------------- LEVEL ---------------- */
+        level1.forEach((row, y) => {
+            this.passable[y] = [];
+            row.forEach((tile, x) => {
+                this.passable[y][x] = !walls.includes(tile);
+
+                if (tile === "·" || tile === "o") {
+                    const dot = this.add.circle(
+                        x * TILE_SIZE + TILE_SIZE / 2,
+                        y * TILE_SIZE + TILE_SIZE / 2,
+                        tile === "o" ? TILE_SIZE * 0.22 : TILE_SIZE * 0.1,
+                        0xffffff
+                    );
+                    dot.setData("type", tile === "o" ? "power" : "normal");
+                    this.dots.add(dot);
+                    this.dotsRemaining++;
+                }
+            });
+        });
+
+        // ---- DRAW LEVEL ----
         this.drawLevel();
 
-        /* ---------------- PLAYER ---------------- */
+        // ---- PLAYER LOGIC ----
         this.player = {
-            tileX: 14,
+            tileX: 13,
             tileY: 23,
-            direction: DIRECTIONS.RIGHT,
-            nextDirection: DIRECTIONS.RIGHT,
+            direction: {x: 1, y: 0},
+            nextDirection: {x: 1, y: 0},
             speed: 200
         };
 
-        this.playerSprite = this.physics.add.existing(
-            this.add.circle(
-                this.player.tileX * TILE_SIZE + TILE_SIZE / 2,
-                this.player.tileY * TILE_SIZE + TILE_SIZE / 2,
-                TILE_SIZE * 0.7,
-                0xffff00
-            )
-        );
-        this.playerSprite.body.setCollideWorldBounds(false);
+        this.playerSprite = {
+            x: this.player.tileX * TILE_SIZE + TILE_SIZE / 2,
+            y: this.player.tileY * TILE_SIZE + TILE_SIZE / 2
+        };
 
-        /* ---------------- INPUT ---------------- */
+        // ---- PACMAN GRAPHICS ----
+        this.playerGraphics = this.add.graphics();
+        this.playerGraphics.setPosition(this.playerSprite.x, this.playerSprite.y);
+
+        // ---- MOUTH ANIMATION ----
+        this.mouthAngle = 0.5;
+        this.mouthOpening = true;
+        this.mouthSpeed = 0.1;
+
+        // ---- INPUT ----
         this.cursors = this.input.keyboard.createCursorKeys();
 
-        /* ---------------- UI ---------------- */
-        const mapWidthPx = level1[0].length * TILE_SIZE;
+        // ---- AUDIO ----
+        this.eatSound = this.sound.add("eat", {loop: true, volume: 0.2});
 
-        this.dotText = this.add.text(
-            mapWidthPx + 10, 10,
-            'Dots: 0',
-            { fontSize: '18px', color: '#fff' }
-        );
-
-        this.roundText = this.add.text(
-            mapWidthPx + 10, 36,
-            `Round: ${this.round}`,
-            { fontSize: '18px', color: '#fff' }
-        );
-
-        const { width, height } = this.scale;
-
-        this.readyBg = this.add.rectangle(
-            width / 2, height / 2, 220, 90, 0x000000
-        ).setDepth(10).setVisible(false);
-
-        this.readyText = this.add.text(
-            width / 2, height / 2,
-            'READY',
-            { fontSize: '36px', color: '#00aaff', fontStyle: 'bold' }
-        ).setOrigin(0.5).setDepth(11).setVisible(false);
-
-        this.roundStartSound = this.sound.add('roundStart', { volume: 0.6 });
-
-        this.eatSound = this.sound.add('eat', {
-            loop: true,
-            volume: 0.4
-        });
-
-        this.isEating = false;
         this.lastEatTime = 0;
+
+        this.score = this.registry.get("score") ?? 0;
+        this.registry.set("score", this.score);
+        this.dotsCollected = 0;
+
+        this.onHudUpdate({
+            score: this.score,
+            dotsCollected: this.dotsCollected,
+            dotsRemaining: this.dotsRemaining,
+            round: this.round,
+        });
 
         this.startRound();
     }
@@ -109,142 +101,151 @@ export default class MainScene extends Phaser.Scene {
     /* ================= ROUND FLOW ================= */
 
     startRound() {
+        this.stopEatSound();              // ✅ ensure silence during READY
         this.isRoundActive = false;
 
-        this.readyBg.setVisible(true);
-        this.readyText.setVisible(true);
-        this.roundStartSound.play();
-
-        this.time.delayedCall(this.roundDelay, () => {
-            this.readyBg.setVisible(false);
-            this.readyText.setVisible(false);
+        this.time.delayedCall(2000, () => {
             this.isRoundActive = true;
         });
+        this.sound.play('roundStart', { volume: 0.2 });
     }
+
 
     endRound() {
-        this.isRoundActive = false;
+        this.stopEatSound();              // ✅ kill waka immediately
+        this.isRoundActive = false;        // ✅ prevent update from restarting it
+        this.round = this.registry.get("round") + 1;
+        this.registry.set("round", this.round);
 
-        this.time.delayedCall(500, () => {
-            this.round++;
-            this.roundText.setText(`Round: ${this.round}`);
-            this.resetLevel();
-            this.startRound();
-        });
+        this.onHudUpdate?.({ round: this.round });
+        this.scene.restart();
     }
 
-    resetLevel() {
-        for (let y = 0; y < this.originalLevel.length; y++) {
-            for (let x = 0; x < this.originalLevel[y].length; x++) {
-                level1[y][x] = this.originalLevel[y][x];
-            }
-        }
-
-        if (this.eatSound.isPlaying) {
+    stopEatSound() {
+        if (!this.eatSound) return;
+        if (this.eatSound.isPlaying || this.eatSound.isPaused) {
             this.eatSound.stop();
         }
-        this.buildDotList();
-        this.drawDots();
-
-        this.player.tileX = 14;
-        this.player.tileY = 23;
-        this.player.direction = DIRECTIONS.RIGHT;
-        this.player.nextDirection = DIRECTIONS.RIGHT;
-
-        this.playerSprite.x = this.player.tileX * TILE_SIZE + TILE_SIZE / 2;
-        this.playerSprite.y = this.player.tileY * TILE_SIZE + TILE_SIZE / 2;
     }
 
     /* ================= DOTS ================= */
 
-    buildDotList() {
-        this.dotPositions = [];
-        this.dotsRemaining = 0;
-
-        level1.forEach((row, y) => {
-            row.forEach((tile, x) => {
-                if (tile === '·' || tile === 'o') {
-                    this.dotPositions.push({ x, y, type: tile });
-                    this.dotsRemaining++;
-                }
-            });
-        });
-    }
-
-    drawDots() {
-        this.dots.clear(true, true);
-
-        this.dotPositions.forEach(d => {
-            const r = d.type === '·' ? TILE_SIZE * 0.1 : TILE_SIZE * 0.22;
-            const c = this.add.circle(
-                d.x * TILE_SIZE + TILE_SIZE / 2,
-                d.y * TILE_SIZE + TILE_SIZE / 2,
-                r, 0xffffff
-            );
-            c.setData('tileX', d.x);
-            c.setData('tileY', d.y);
-            this.dots.add(c);
-        });
-    }
 
     collectDot() {
-        const tx = Math.floor(this.playerSprite.x / TILE_SIZE);
-        const ty = Math.floor(this.playerSprite.y / TILE_SIZE);
-        const tile = level1[ty]?.[tx];
+        const px = this.playerSprite.x;
+        const py = this.playerSprite.y;
 
-        if (tile === '·' || tile === 'o') {
-            level1[ty][tx] = ' ';
-            const dot = this.dots.getChildren().find(
-                d => d.getData('tileX') === tx && d.getData('tileY') === ty
-            );
-            if (dot) dot.destroy();
+        this.dots.children.iterate((dot) => {
+            if (!dot || !dot.active) return;
 
-            this.dotsRemaining--;
-            this.dotsCollected++;
-            this.dotText.setText(`Dots: ${this.dotsCollected}`);
+            const dist = Phaser.Math.Distance.Between(px, py, dot.x, dot.y);
 
-            this.lastEatTime = this.time.now;
+            if (dist < TILE_SIZE * 0.35) {
+                const type = dot.getData("type") || "normal";
 
-            if (!this.eatSound.isPlaying) {
-                this.eatSound.play({loop: true});
+                dot.destroy();
+
+                const points = type === "power" ? 50 : 10;
+                this.score += points;
+                this.registry.set("score", this.score);
+
+                this.dotsCollected++;
+                this.dotsRemaining--;
+
+                this.lastEatTime = this.time.now;
+                if (!this.eatSound.isPlaying) {
+                    this.eatSound.play();
+                }
+
+                this.onHudUpdate?.({
+                    score: this.score,
+                    dotsCollected: this.dotsCollected,
+                    dotsRemaining: this.dotsRemaining,
+                });
+
+                if (this.dotsRemaining <= 0) {
+                    this.endRound();
+                }
             }
+        });
+    }
 
-            if (this.dotsRemaining === 0) {
-                this.endRound();
-            }
+    animateMouth(moving) {
+        if (!moving) {
+            this.mouthAngle = 0.01;
+            return;
+        }
+
+        if (this.mouthOpening) {
+            this.mouthAngle += this.mouthSpeed;
+            if (this.mouthAngle >= 0.65) this.mouthOpening = false;
+        } else {
+            this.mouthAngle -= this.mouthSpeed;
+            if (this.mouthAngle <= 0.05) this.mouthOpening = true;
         }
     }
 
+    drawPacman() {
+        const g = this.playerGraphics;
+        g.clear();
+
+        let rot = 0;
+        if (this.player.direction.x === -1) rot = Math.PI;
+        else if (this.player.direction.y === -1) rot = -Math.PI / 2;
+        else if (this.player.direction.y === 1) rot = Math.PI / 2;
+
+        g.fillStyle(0xffff00, 1);
+        g.slice(
+            0,
+            0,
+            TILE_SIZE * 0.70,
+            this.mouthAngle,
+            Math.PI * 2 - this.mouthAngle,
+            false
+        );
+        g.fillPath();
+        g.rotation = rot;
+    }
+
+
     /* ================= MOVEMENT ================= */
 
-    canMove(tileX, tileY, dir) {
-        const nx = tileX + dir.x;
-        const ny = tileY + dir.y;
-
-        if (nx < 0 || nx >= level1[0].length) return true;
-        const tile = level1[ny]?.[nx];
-        return tile && !WALLS.includes(tile);
+    canMove(tx, ty, dir) {
+        const nx = tx + dir.x;
+        const ny = ty + dir.y;
+        return this.passable[ny]?.[nx];
     }
+
 
     handleTunnelWrap() {
-        const w = level1[0].length * TILE_SIZE;
+        const mapWidthPx = level1[0].length * TILE_SIZE;
 
-        if (this.playerSprite.x < 0) this.playerSprite.x += w;
-        if (this.playerSprite.x >= w) this.playerSprite.x -= w;
-
-        this.player.tileX = Math.floor(this.playerSprite.x / TILE_SIZE);
-        this.player.tileY = Math.floor(this.playerSprite.y / TILE_SIZE);
+        if (this.playerSprite.x < -TILE_SIZE / 2) {
+            this.playerSprite.x = mapWidthPx + TILE_SIZE / 2;
+            this.player.tileX = level1[0].length - 1;
+        } else if (this.playerSprite.x > mapWidthPx + TILE_SIZE / 2) {
+            this.playerSprite.x = -TILE_SIZE / 2;
+            this.player.tileX = 0;
+        }
     }
+
 
     handleInput() {
-        if (this.cursors.left.isDown)  this.player.nextDirection = DIRECTIONS.LEFT;
-        else if (this.cursors.right.isDown) this.player.nextDirection = DIRECTIONS.RIGHT;
-        else if (this.cursors.up.isDown)    this.player.nextDirection = DIRECTIONS.UP;
-        else if (this.cursors.down.isDown)  this.player.nextDirection = DIRECTIONS.DOWN;
+        if (this.cursors.left.isDown) this.player.nextDirection = {x: -1, y: 0};
+        else if (this.cursors.right.isDown) this.player.nextDirection = {x: 1, y: 0};
+        else if (this.cursors.up.isDown) this.player.nextDirection = {x: 0, y: -1};
+        else if (this.cursors.down.isDown) this.player.nextDirection = {x: 0, y: 1};
     }
 
+
     update(time, delta) {
-        if (!this.isRoundActive) return;
+        this.collectDot();
+
+        if (!this.isRoundActive) {
+            this.stopEatSound(); // prevent lingering loop during READY
+            this.drawPacman();
+            return;
+        }
 
         this.handleInput();
 
@@ -254,7 +255,7 @@ export default class MainScene extends Phaser.Scene {
 
         let blockedThisFrame = false;
 
-        // Grid alignment check
+        // Are we centered on the current tile?
         if (
             Math.abs(this.playerSprite.x - cx) < 1 &&
             Math.abs(this.playerSprite.y - cy) < 1
@@ -262,43 +263,51 @@ export default class MainScene extends Phaser.Scene {
             this.playerSprite.x = cx;
             this.playerSprite.y = cy;
 
-            // Attempt direction change
+            // Try to turn
             if (this.canMove(this.player.tileX, this.player.tileY, this.player.nextDirection)) {
                 this.player.direction = this.player.nextDirection;
             }
 
-            // Hard wall stop
+            // If we can't go forward, we are blocked (no movement)
             if (!this.canMove(this.player.tileX, this.player.tileY, this.player.direction)) {
                 blockedThisFrame = true;
             } else {
-                // Advance logical tile
+                // Advance logical target tile
                 this.player.tileX += this.player.direction.x;
                 this.player.tileY += this.player.direction.y;
             }
         }
 
-        // Apply movement only if not blocked
+        // Track actual movement by comparing before/after positions
+        const beforeX = this.playerSprite.x;
+        const beforeY = this.playerSprite.y;
+
         if (!blockedThisFrame) {
             this.playerSprite.x += this.player.direction.x * move;
             this.playerSprite.y += this.player.direction.y * move;
         }
 
-        // 🚨 IMMEDIATE sound stop if blocked
-        if (blockedThisFrame && this.eatSound.isPlaying) {
-            this.eatSound.stop();
-        }
-
-        // Collect dots AFTER movement
-        this.collectDot();
-
-        // Failsafe: stop sound if no recent eating
-        if (this.eatSound.isPlaying) {
-            if (this.time.now - this.lastEatTime > 120) {
-                this.eatSound.stop();
-            }
-        }
-
+        // Wrap can change x
         this.handleTunnelWrap();
+
+        const movedThisFrame =
+            Math.abs(this.playerSprite.x - beforeX) > 0.05 ||
+            Math.abs(this.playerSprite.y - beforeY) > 0.05;
+
+        // ---- EAT AUDIO RULE: only audible when MOVING and RECENTLY EATING ----
+        const eatingRecently = (this.time.now - this.lastEatTime) < 140;
+
+        if (movedThisFrame && eatingRecently) {
+            if (this.eatSound.isPaused) this.eatSound.resume();
+            else if (!this.eatSound.isPlaying) this.eatSound.play();
+        } else {
+            this.stopEatSound();
+        }
+
+        // Visuals
+        this.playerGraphics.setPosition(this.playerSprite.x, this.playerSprite.y);
+        this.animateMouth(movedThisFrame);
+        this.drawPacman();
     }
 
 

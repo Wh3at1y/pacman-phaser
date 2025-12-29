@@ -4,11 +4,13 @@ import { level1 } from '../levels/level1';
 const TILE_SIZE = 24;
 
 const DIRECTIONS = {
-    LEFT: { x: -1, y: 0 },
-    RIGHT: { x: 1, y: 0 },
-    UP: { x: 0, y: -1 },
-    DOWN: { x: 0, y: 1 }
+    LEFT:  { x: -1, y: 0 },
+    RIGHT: { x: 1,  y: 0 },
+    UP:    { x: 0,  y: -1 },
+    DOWN:  { x: 0,  y: 1 }
 };
+
+const WALLS = ["═","║","╔","╗","╚","╝","┌","┐","└","┘","|","-"];
 
 export default class MainScene extends Phaser.Scene {
     constructor() {
@@ -16,19 +18,102 @@ export default class MainScene extends Phaser.Scene {
     }
 
     preload() {
-        this.load.audio('roundStart', 'start.mp3');
+        this.load.audio('roundStart', 'start.mp3', {volume: 0});
+        this.load.audio('eat', 'eating.mp3');
     }
 
-    startRound() {
-        this.roundStartSound.play();
+    create() {
+        this.cameras.main.setZoom(1);
 
+        /* ---------------- ROUND STATE ---------------- */
+        this.round = 1;
+        this.roundDelay = 2500;
+        this.isRoundActive = false;
+
+        this.originalLevel = level1.map(r => [...r]);
+
+        /* ---------------- DOTS ---------------- */
+        this.dots = this.add.group();
+        this.dotPositions = [];
+        this.dotsRemaining = 0;
+        this.dotsCollected = 0;
+
+        this.buildDotList();
+        this.drawDots();
+
+        /* ---------------- LEVEL ---------------- */
+        this.drawLevel();
+
+        /* ---------------- PLAYER ---------------- */
+        this.player = {
+            tileX: 14,
+            tileY: 23,
+            direction: DIRECTIONS.RIGHT,
+            nextDirection: DIRECTIONS.RIGHT,
+            speed: 200
+        };
+
+        this.playerSprite = this.physics.add.existing(
+            this.add.circle(
+                this.player.tileX * TILE_SIZE + TILE_SIZE / 2,
+                this.player.tileY * TILE_SIZE + TILE_SIZE / 2,
+                TILE_SIZE * 0.7,
+                0xffff00
+            )
+        );
+        this.playerSprite.body.setCollideWorldBounds(false);
+
+        /* ---------------- INPUT ---------------- */
+        this.cursors = this.input.keyboard.createCursorKeys();
+
+        /* ---------------- UI ---------------- */
+        const mapWidthPx = level1[0].length * TILE_SIZE;
+
+        this.dotText = this.add.text(
+            mapWidthPx + 10, 10,
+            'Dots: 0',
+            { fontSize: '18px', color: '#fff' }
+        );
+
+        this.roundText = this.add.text(
+            mapWidthPx + 10, 36,
+            `Round: ${this.round}`,
+            { fontSize: '18px', color: '#fff' }
+        );
+
+        const { width, height } = this.scale;
+
+        this.readyBg = this.add.rectangle(
+            width / 2, height / 2, 220, 90, 0x000000
+        ).setDepth(10).setVisible(false);
+
+        this.readyText = this.add.text(
+            width / 2, height / 2,
+            'READY',
+            { fontSize: '36px', color: '#00aaff', fontStyle: 'bold' }
+        ).setOrigin(0.5).setDepth(11).setVisible(false);
+
+        this.roundStartSound = this.sound.add('roundStart', { volume: 0.6 });
+
+        this.eatSound = this.sound.add('eat', {
+            loop: true,
+            volume: 0.4
+        });
+
+        this.isEating = false;
+        this.lastEatTime = 0;
+
+        this.startRound();
+    }
+
+    /* ================= ROUND FLOW ================= */
+
+    startRound() {
         this.isRoundActive = false;
 
         this.readyBg.setVisible(true);
         this.readyText.setVisible(true);
-
-        this.player.direction = { x: 0, y: 0 };
-        this.player.nextDirection = { x: 0, y: 0 };
+        this.roundStartSound.play();
 
         this.time.delayedCall(this.roundDelay, () => {
             this.readyBg.setVisible(false);
@@ -37,266 +122,30 @@ export default class MainScene extends Phaser.Scene {
         });
     }
 
-    create() {
-        this.round = 1;
-        this.isRoundActive = false;
-        this.roundDelay = 2500; // 5 seconds
-
-        this.roundInProgress = true;
-        this.round = 1;
-        this.dotsRemaining = 0;
-        this.cameras.main.setZoom(1);
-        this.originalLevel = level1.map(row => [...row]);
-
-
-        // Preprocess level: walls and dots
-        this.passable = [];
-        this.dotPositions = [];
-        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
-
-        level1.forEach((row, y) => {
-            this.passable[y] = [];
-            row.forEach((tile, x) => {
-                this.passable[y][x] = !walls.includes(tile);
-                if (tile === "·" || tile === "o") {
-                    this.dotPositions.push({ x, y, type: tile });
-                }
-            });
-        });
-
-        // Draw dots
-        this.dots = this.add.group();
-        this.drawDots();
-
-        // Draw level
-        this.drawLevel();
-
-        // Player setup
-        this.player = {
-            tileX: 14,
-            tileY: 23,
-            direction: DIRECTIONS.RIGHT,
-            nextDirection: DIRECTIONS.RIGHT,
-            speed: 250
-        };
-
-        this.playerSprite = this.physics.add.existing(
-            this.add.circle(
-                this.player.tileX * TILE_SIZE + TILE_SIZE / 2,
-                this.player.tileY * TILE_SIZE + TILE_SIZE / 2,
-                TILE_SIZE * 0.7, // bigger than TILE_SIZE/2
-                0xffff00
-            )
-        );
-        this.playerSprite.body.setCollideWorldBounds(false);
-
-        this.cursors = this.input.keyboard.createCursorKeys();
-
-        this.dotsCollected = 0;
-
-        // Display text
-        this.dotText = this.add.text(
-            level1[0].length * TILE_SIZE + 10, // x position just outside the map
-            10,                                // y position
-            `Dots: 0`,
-            { font: '20px Arial', fill: '#ffffff' }
-        );
-
-        this.roundText = this.add.text(
-            level1[0].length * TILE_SIZE + 10,
-            40,
-            `Round: ${this.round}`,
-            { fontSize: '16px', fill: '#fff' }
-        );
-
-        const { width, height } = this.scale;
-
-        this.readyBg = this.add.rectangle(
-            width / 2,
-            height / 2,
-            200,
-            80,
-            0x000000
-        ).setDepth(10).setVisible(false);
-
-        this.readyText = this.add.text(
-            width / 2,
-            height / 2,
-            "READY",
-            {
-                fontSize: "36px",
-                color: "#00aaff",
-                fontStyle: "bold"
-            }
-        ).setOrigin(0.5).setDepth(11).setVisible(false);
-        this.roundStartSound = this.sound.add('roundStart', {
-            volume: 0.6
-        });
-        this.startRound();
-
-    }
-
-    drawDots() {
-        this.dots.clear(true, true);
-        this.dotsRemaining = 0;
-
-        this.dotPositions.forEach(dot => {
-            const radius = dot.type === "·" ? TILE_SIZE * 0.1 : TILE_SIZE * 0.22;
-
-            const sprite = this.add.circle(
-                dot.x * TILE_SIZE + TILE_SIZE / 2,
-                dot.y * TILE_SIZE + TILE_SIZE / 2,
-                radius,
-                0xffffff
-            );
-
-            sprite.setData('tileX', dot.x);
-            sprite.setData('tileY', dot.y);
-            this.dots.add(sprite);
-
-            this.dotsRemaining++;
-        });
-    }
-
-    checkRoundComplete() {
-        if (!this.roundInProgress) return;
-
-        if (this.dotsRemaining <= 0) {
-            this.roundInProgress = false;
-            this.time.delayedCall(500, () => {
-                this.nextRound();
-            });
-        }
-    }
-
-    collectDotPixel() {
-        const tileX = Math.floor(this.playerSprite.x / TILE_SIZE);
-        const tileY = Math.floor(this.playerSprite.y / TILE_SIZE);
-
-        const tile = level1[tileY]?.[tileX];
-        if (tile === "·" || tile === "o") {
-            level1[tileY][tileX] = " "; // remove dot
-
-            const dot = this.dots.getChildren().find(d =>
-                d.getData('tileX') === tileX &&
-                d.getData('tileY') === tileY
-            );
-
-            if (dot) {
-                dot.destroy();
-
-                // Increment counter and update text
-                this.dotsRemaining--;
-
-                this.dotsCollected++;
-                this.dotText.setText(`Dots: ${this.dotsCollected}`);
-
-                if (this.dotsRemaining === 0) {
-                    this.endRound();
-                }
-            }
-        }
-    }
-
     endRound() {
-        if (!this.isRoundActive) return;
-
         this.isRoundActive = false;
 
         this.time.delayedCall(500, () => {
             this.round++;
             this.roundText.setText(`Round: ${this.round}`);
-            this.nextRound();
+            this.resetLevel();
+            this.startRound();
         });
     }
 
-    handleTunnelWrap() {
-        const mapWidthPx = level1[0].length * TILE_SIZE;
-
-        // Wrap horizontally
-        if (this.playerSprite.x < 0) {
-            this.playerSprite.x += mapWidthPx;
-        } else if (this.playerSprite.x >= mapWidthPx) {
-            this.playerSprite.x -= mapWidthPx;
-        }
-
-        // Update logical tile coordinates
-        this.player.tileX = Math.floor(this.playerSprite.x / TILE_SIZE);
-        this.player.tileY = Math.floor(this.playerSprite.y / TILE_SIZE);
-    }
-
-    canMove(tileX, tileY, direction) {
-        const newX = tileX + direction.x;
-        const newY = tileY + direction.y;
-
-        // Check horizontal warp allowance
-        const mapWidth = level1[0].length;
-        if (newX < 0 || newX >= mapWidth) return true; // allow warp at edges
-
-        const tile = level1[newY]?.[newX];
-        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
-        return tile && !walls.includes(tile);
-    }
-
-    update(time, delta) {
-        // ALWAYS allow round-complete checks
-        this.collectDotPixel();
-
-        // Block movement ONLY
-        if (!this.isRoundActive) return;
-
-        this.handleInput();
-
-        const moveAmount = (this.player.speed * delta) / 1000;
-        const centerX = this.player.tileX * TILE_SIZE + TILE_SIZE / 2;
-        const centerY = this.player.tileY * TILE_SIZE + TILE_SIZE / 2;
-
-        if (
-            Math.abs(this.playerSprite.x - centerX) < 1 &&
-            Math.abs(this.playerSprite.y - centerY) < 1
-        ) {
-            this.playerSprite.x = centerX;
-            this.playerSprite.y = centerY;
-
-            if (this.canMove(this.player.tileX, this.player.tileY, this.player.nextDirection)) {
-                this.player.direction = this.player.nextDirection;
-            }
-
-            if (!this.canMove(this.player.tileX, this.player.tileY, this.player.direction)) {
-                return;
-            }
-
-            this.player.tileX += this.player.direction.x;
-            this.player.tileY += this.player.direction.y;
-        }
-
-        this.playerSprite.x += this.player.direction.x * moveAmount;
-        this.playerSprite.y += this.player.direction.y * moveAmount;
-
-        this.handleTunnelWrap();
-    }
-
-    nextRound() {
-        // Restore level data
+    resetLevel() {
         for (let y = 0; y < this.originalLevel.length; y++) {
             for (let x = 0; x < this.originalLevel[y].length; x++) {
                 level1[y][x] = this.originalLevel[y][x];
             }
         }
 
-        // Rebuild dots
-        this.dotPositions = [];
-        level1.forEach((row, y) => {
-            row.forEach((tile, x) => {
-                if (tile === "·" || tile === "o") {
-                    this.dotPositions.push({ x, y, type: tile });
-                }
-            });
-        });
-
+        if (this.eatSound.isPlaying) {
+            this.eatSound.stop();
+        }
+        this.buildDotList();
         this.drawDots();
 
-        // Reset Pac-Man
         this.player.tileX = 14;
         this.player.tileY = 23;
         this.player.direction = DIRECTIONS.RIGHT;
@@ -304,32 +153,154 @@ export default class MainScene extends Phaser.Scene {
 
         this.playerSprite.x = this.player.tileX * TILE_SIZE + TILE_SIZE / 2;
         this.playerSprite.y = this.player.tileY * TILE_SIZE + TILE_SIZE / 2;
-
-        // Start READY delay
-        this.startRound();
     }
 
+    /* ================= DOTS ================= */
 
-    resetLevelDots() {
+    buildDotList() {
         this.dotPositions = [];
+        this.dotsRemaining = 0;
 
         level1.forEach((row, y) => {
             row.forEach((tile, x) => {
-                if (tile === "·" || tile === "o") {
+                if (tile === '·' || tile === 'o') {
                     this.dotPositions.push({ x, y, type: tile });
+                    this.dotsRemaining++;
                 }
             });
         });
+    }
 
-        this.drawDots();
+    drawDots() {
+        this.dots.clear(true, true);
+
+        this.dotPositions.forEach(d => {
+            const r = d.type === '·' ? TILE_SIZE * 0.1 : TILE_SIZE * 0.22;
+            const c = this.add.circle(
+                d.x * TILE_SIZE + TILE_SIZE / 2,
+                d.y * TILE_SIZE + TILE_SIZE / 2,
+                r, 0xffffff
+            );
+            c.setData('tileX', d.x);
+            c.setData('tileY', d.y);
+            this.dots.add(c);
+        });
+    }
+
+    collectDot() {
+        const tx = Math.floor(this.playerSprite.x / TILE_SIZE);
+        const ty = Math.floor(this.playerSprite.y / TILE_SIZE);
+        const tile = level1[ty]?.[tx];
+
+        if (tile === '·' || tile === 'o') {
+            level1[ty][tx] = ' ';
+            const dot = this.dots.getChildren().find(
+                d => d.getData('tileX') === tx && d.getData('tileY') === ty
+            );
+            if (dot) dot.destroy();
+
+            this.dotsRemaining--;
+            this.dotsCollected++;
+            this.dotText.setText(`Dots: ${this.dotsCollected}`);
+
+            this.lastEatTime = this.time.now;
+
+            if (!this.eatSound.isPlaying) {
+                this.eatSound.play({loop: true});
+            }
+
+            if (this.dotsRemaining === 0) {
+                this.endRound();
+            }
+        }
+    }
+
+    /* ================= MOVEMENT ================= */
+
+    canMove(tileX, tileY, dir) {
+        const nx = tileX + dir.x;
+        const ny = tileY + dir.y;
+
+        if (nx < 0 || nx >= level1[0].length) return true;
+        const tile = level1[ny]?.[nx];
+        return tile && !WALLS.includes(tile);
+    }
+
+    handleTunnelWrap() {
+        const w = level1[0].length * TILE_SIZE;
+
+        if (this.playerSprite.x < 0) this.playerSprite.x += w;
+        if (this.playerSprite.x >= w) this.playerSprite.x -= w;
+
+        this.player.tileX = Math.floor(this.playerSprite.x / TILE_SIZE);
+        this.player.tileY = Math.floor(this.playerSprite.y / TILE_SIZE);
     }
 
     handleInput() {
-        if (this.cursors.left.isDown) this.player.nextDirection = DIRECTIONS.LEFT;
+        if (this.cursors.left.isDown)  this.player.nextDirection = DIRECTIONS.LEFT;
         else if (this.cursors.right.isDown) this.player.nextDirection = DIRECTIONS.RIGHT;
-        else if (this.cursors.up.isDown) this.player.nextDirection = DIRECTIONS.UP;
-        else if (this.cursors.down.isDown) this.player.nextDirection = DIRECTIONS.DOWN;
+        else if (this.cursors.up.isDown)    this.player.nextDirection = DIRECTIONS.UP;
+        else if (this.cursors.down.isDown)  this.player.nextDirection = DIRECTIONS.DOWN;
     }
+
+    update(time, delta) {
+        if (!this.isRoundActive) return;
+
+        this.handleInput();
+
+        const move = (this.player.speed * delta) / 1000;
+        const cx = this.player.tileX * TILE_SIZE + TILE_SIZE / 2;
+        const cy = this.player.tileY * TILE_SIZE + TILE_SIZE / 2;
+
+        let blockedThisFrame = false;
+
+        // Grid alignment check
+        if (
+            Math.abs(this.playerSprite.x - cx) < 1 &&
+            Math.abs(this.playerSprite.y - cy) < 1
+        ) {
+            this.playerSprite.x = cx;
+            this.playerSprite.y = cy;
+
+            // Attempt direction change
+            if (this.canMove(this.player.tileX, this.player.tileY, this.player.nextDirection)) {
+                this.player.direction = this.player.nextDirection;
+            }
+
+            // Hard wall stop
+            if (!this.canMove(this.player.tileX, this.player.tileY, this.player.direction)) {
+                blockedThisFrame = true;
+            } else {
+                // Advance logical tile
+                this.player.tileX += this.player.direction.x;
+                this.player.tileY += this.player.direction.y;
+            }
+        }
+
+        // Apply movement only if not blocked
+        if (!blockedThisFrame) {
+            this.playerSprite.x += this.player.direction.x * move;
+            this.playerSprite.y += this.player.direction.y * move;
+        }
+
+        // 🚨 IMMEDIATE sound stop if blocked
+        if (blockedThisFrame && this.eatSound.isPlaying) {
+            this.eatSound.stop();
+        }
+
+        // Collect dots AFTER movement
+        this.collectDot();
+
+        // Failsafe: stop sound if no recent eating
+        if (this.eatSound.isPlaying) {
+            if (this.time.now - this.lastEatTime > 120) {
+                this.eatSound.stop();
+            }
+        }
+
+        this.handleTunnelWrap();
+    }
+
 
     drawLevel() {
         const graphics = this.add.graphics();

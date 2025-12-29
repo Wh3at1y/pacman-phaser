@@ -6,13 +6,13 @@ export class Game {
         const config = {
             type: Phaser.AUTO,
             parent: 'game',
-            // width: 448,
+            // width: 800,
             // height: 496,
             backgroundColor: '#000000',
             pixelArt: true,
 
             scale: {
-                mode: Phaser.Scale.FIT,
+                mode: Phaser.Scale.NONE,
                 autoCenter: Phaser.Scale.CENTER_BOTH
             },
 

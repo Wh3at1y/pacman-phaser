@@ -20,7 +20,7 @@ const initializeSocket = () => {
     if (!window.socket) {
         const playerId = getOrCreatePlayerId();
 
-        window.socket = io("https://21232a732af9.ngrok-free.app", {
+        window.socket = io("localhost:3001", {
             transports: ["websocket"],          // optional but helps with ngrok weirdness
             auth: { playerId },                 // send stable identity
             reconnection: true,
@@ -34,7 +34,7 @@ const socket = initializeSocket();
 export default function Lobby() {
     const [isConnecting, setIsConnecting] = useState(true)
     const [players, setPlayers] = useState([])
-    const [startGame, setStartGame] = useState(true)
+    const [startGame, setStartGame] = useState(false)
 
 
     useEffect(() => {
@@ -130,7 +130,7 @@ export default function Lobby() {
 
                     <div className="actions">
                         {currentPlayer.ready ? <button className="btn btn--primary" type="button" onClick={onReady}>Un-Ready</button> : <button className="btn btn--primary" type="button" onClick={onReady}>Ready Up</button>}
-                        <button className="btn btn--ghost" type="button">Change Pac-Man</button>
+                        <button className="btn btn--ghost" type="button">PAC-MEN</button>
                         <button className="btn btn--ghost" type="button" onClick={() => setStartGame(true)}>Start Game</button>
 
                         <div className="hint">

@@ -24,6 +24,10 @@ export default class MainScene extends Phaser.Scene {
 
         this.cameras.main.setZoom(1);
 
+        this.isDying = false;
+        this.deathDelayMs = 1000; // tweak if you want
+
+
         // ---- ROUND STATE ----
         this.round = this.registry.get("round") ?? 1;
         this.registry.set("round", this.round);
@@ -54,6 +58,52 @@ export default class MainScene extends Phaser.Scene {
                 }
             });
         });
+
+        // ---- BUILD GHOST HOUSE REGION (flood fill) ----
+// We treat "~" as a boundary (door), not part of inside.
+// Find a "~" tile, then take the tile BELOW it as the inside start.
+        this.ghostHouse = Array.from({ length: this.levelRows }, () =>
+            Array(this.levelCols).fill(false)
+        );
+
+        let start = null;
+        for (let y = 0; y < this.levelRows; y++) {
+            for (let x = 0; x < this.levelCols; x++) {
+                if (level1[y][x] === "~") {
+                    const sy = y + 1; // inside is below in your map
+                    if (level1[sy]?.[x] && !["═","║","╔","╗","╚","╝","┌","┐","└","┘","|","-","~"].includes(level1[sy][x])) {
+                        start = { x, y: sy };
+                        break;
+                    }
+                }
+            }
+            if (start) break;
+        }
+
+        if (start) {
+            const stack = [start];
+            this.ghostHouse[start.y][start.x] = true;
+
+            while (stack.length) {
+                const p = stack.pop();
+                const dirs = [{x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1}];
+
+                for (const d of dirs) {
+                    const nx = p.x + d.x;
+                    const ny = p.y + d.y;
+                    if (nx < 0 || ny < 0 || nx >= this.levelCols || ny >= this.levelRows) continue;
+                    if (this.ghostHouse[ny][nx]) continue;
+
+                    const t = level1[ny][nx];
+                    // Stop flood at walls + door
+                    if (["═","║","╔","╗","╚","╝","┌","┐","└","┘","|","-","~"].includes(t)) continue;
+
+                    this.ghostHouse[ny][nx] = true;
+                    stack.push({ x: nx, y: ny });
+                }
+            }
+        }
+
 
         // ---- DRAW LEVEL ----
         this.drawLevel();
@@ -104,32 +154,33 @@ export default class MainScene extends Phaser.Scene {
             new Ghost(this, {
                 name: "blinky",
                 color: 0xff0000,
-                startTile: { x: 13, y: 11 },
-                scatterTarget: { x: this.levelCols - 2, y: 1 },
-                speed: 150,
+                startTile: { x: 14, y: 11 },
+                scatterTarget: { x: this.levelCols - 2, y: 1 }, // ✅ top-right
+                speed: 155,
             }),
             new Ghost(this, {
                 name: "pinky",
                 color: 0xffb8ff,
                 startTile: { x: 14, y: 11 },
-                scatterTarget: { x: 1, y: 1 },
-                speed: 145,
+                scatterTarget: { x: 1, y: 1 }, // ✅ top-left
+                speed: 140,
             }),
             new Ghost(this, {
                 name: "inky",
                 color: 0x00ffff,
                 startTile: { x: 13, y: 12 },
-                scatterTarget: { x: this.levelCols - 2, y: this.levelRows - 2 },
-                speed: 140,
+                scatterTarget: { x: this.levelCols - 2, y: this.levelRows - 2 }, // ✅ bottom-right
+                speed: 130,
             }),
             new Ghost(this, {
                 name: "clyde",
                 color: 0xffb852,
                 startTile: { x: 14, y: 12 },
-                scatterTarget: { x: 1, y: this.levelRows - 2 },
-                speed: 135,
+                scatterTarget: { x: 1, y: this.levelRows - 2 }, // ✅ bottom-left
+                speed: 120,
             }),
         ];
+
 
         this.onHudUpdate?.({
             score: this.score,
@@ -140,6 +191,48 @@ export default class MainScene extends Phaser.Scene {
 
         this.startRound();
     }
+
+    checkGhostCollision() {
+        if (this.isDying) return false;
+
+        // Pac-Man tile
+        const px = this.player.tileX;
+        const py = this.player.tileY;
+
+        // Optional: pixel-based radius to catch mid-tile overlaps
+        const pacX = this.playerSprite.x;
+        const pacY = this.playerSprite.y;
+        const hitDist = TILE_SIZE * 0.55; // tune
+
+        for (const g of this.ghosts) {
+            // Tile overlap (fast + stable)
+            if (g.tileX === px && g.tileY === py) return true;
+
+            // Pixel proximity (feels better during motion)
+            const dx = g.x - pacX;
+            const dy = g.y - pacY;
+            if ((dx * dx + dy * dy) <= hitDist * hitDist) return true;
+        }
+
+        return false;
+    }
+
+    killPacman() {
+        if (this.isDying) return;
+        this.isDying = true;
+
+        // stop gameplay + audio immediately
+        this.isRoundActive = false;
+        this.stopEatSound?.();
+
+        // reset after a short delay
+        this.time.delayedCall(this.deathDelayMs, () => {
+            // easiest + most reliable reset: restart the scene
+            // (your round reset logic already works there)
+            this.scene.restart();
+        });
+    }
+
 
     /* ================= ROUND FLOW ================= */
 
@@ -247,22 +340,40 @@ export default class MainScene extends Phaser.Scene {
 
     /* ================= MOVEMENT ================= */
 
-    canMove(tx, ty, dir) {
-        const nx = tx + dir.x;
-        const ny = ty + dir.y;
-        return this.passable[ny]?.[nx];
+    canMove(tileX, tileY, direction) {
+        const cols = level1[0].length;
+        const rows = level1.length;
+
+        let newX = tileX + direction.x;
+        const newY = tileY + direction.y;
+
+        // If we’re going off the left/right edge, treat it as wrapping
+        if (newX < 0) newX = cols - 1;
+        else if (newX >= cols) newX = 0;
+
+        // block vertical out-of-bounds (top/bottom should NOT wrap)
+        if (newY < 0 || newY >= rows) return false;
+
+        const tile = level1[newY][newX];
+        const walls = ["═","║","╔","╗","╚","╝","┌","┐","└","┘","|","-"];
+
+        // Passable if not a wall
+        return !walls.includes(tile);
     }
 
     handleTunnelWrap() {
-        const mapWidthPx = level1[0].length * TILE_SIZE;
+        const cols = level1[0].length;
+        const mapWidthPx = cols * TILE_SIZE;
 
         if (this.playerSprite.x < -TILE_SIZE / 2) {
             this.playerSprite.x = mapWidthPx + TILE_SIZE / 2;
-            this.player.tileX = level1[0].length - 1;
         } else if (this.playerSprite.x > mapWidthPx + TILE_SIZE / 2) {
             this.playerSprite.x = -TILE_SIZE / 2;
-            this.player.tileX = 0;
         }
+
+        // keep logical tile in sync every frame
+        this.player.tileX = Math.floor(this.playerSprite.x / TILE_SIZE);
+        this.player.tileY = Math.floor(this.playerSprite.y / TILE_SIZE);
     }
 
     handleInput() {
@@ -293,11 +404,58 @@ export default class MainScene extends Phaser.Scene {
         }
     }
 
+    isWallTile(tile) {
+        // pacman walls + ghost-door
+        return ["═","║","╔","╗","╚","╝","┌","┐","└","┘","|","-","~"].includes(tile);
+    }
+
+    isPacmanPassable(tx, ty) {
+        const tile = level1[ty]?.[tx];
+        if (!tile) return false;
+        return !this.isWallTile(tile);
+    }
+
+// Ghost one-way passability: can EXIT via "~" but cannot ENTER via "~"
+    isGhostPassable(fromX, fromY, toX, toY) {
+        // allow tunnel wrap in tile-space
+        const cols = this.levelCols;
+        if (toX < 0) toX = cols - 1;
+        else if (toX >= cols) toX = 0;
+
+        const fromTile = level1[fromY]?.[fromX];
+        const toTile = level1[toY]?.[toX];
+        if (!toTile) return false;
+
+        // normal walls block ghosts too
+        if (["═","║","╔","╗","╚","╝","┌","┐","└","┘","|","-"].includes(toTile)) return false;
+
+        // door rule
+        if (toTile === "~") {
+            // only allowed if coming FROM inside the house (or already on a door tile)
+            const fromInside = !!this.ghostHouse?.[fromY]?.[fromX];
+            return fromInside || fromTile === "~";
+        }
+
+        // stepping into the house interior from outside is blocked (prevents re-entry)
+        const toInside = !!this.ghostHouse?.[toY]?.[toX];
+        const fromInside = !!this.ghostHouse?.[fromY]?.[fromX];
+        if (!fromInside && toInside) return false;
+
+        return true;
+    }
+
+
     update(time, delta) {
         this.collectDot();
 
         if (!this.isRoundActive) {
             this.stopEatSound();
+            this.drawPacman();
+            return;
+        }
+
+        if (this.isDying) {
+            this.stopEatSound?.();
             this.drawPacman();
             return;
         }
@@ -355,6 +513,12 @@ export default class MainScene extends Phaser.Scene {
         for (const g of this.ghosts) {
             g.setMode(this.ghostMode);
             g.update(delta, pacTile);
+        }
+
+        if (this.checkGhostCollision()) {
+            this.killPacman();
+            this.drawPacman();
+            return;
         }
 
         // Visuals
@@ -492,6 +656,18 @@ export default class MainScene extends Phaser.Scene {
                     case "║":
                         graphics.lineStyle(thick, 0x0000ff, 1);
                         graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE));
+                        break;
+
+                    case "~":
+                        graphics.lineStyle(2, 0xffffff, 1);
+                        graphics.strokeLineShape(
+                            new Phaser.Geom.Line(
+                                baseX,
+                                baseY + TILE / 2,
+                                baseX + TILE,
+                                baseY + TILE / 2
+                            )
+                        );
                         break;
 
                     // ---- EMPTY ----

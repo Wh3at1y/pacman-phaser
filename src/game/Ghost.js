@@ -19,23 +19,22 @@ export default class Ghost {
         this.tileX = config.startTile.x;
         this.tileY = config.startTile.y;
 
+        const ts = this.scene.TILE_SIZE;
+
         // Pixel center
-        this.x = this.tileX * scene.TILE_SIZE + scene.TILE_SIZE / 2;
-        this.y = this.tileY * scene.TILE_SIZE + scene.TILE_SIZE / 2;
+        this.x = this.tileX * ts + ts / 2;
+        this.y = this.tileY * ts + ts / 2;
 
-        // Start moving left by default (classic vibe), but we’ll auto-correct if blocked.
+        // Start moving left by default (classic vibe)
         this.dir = { x: -1, y: 0 };
-        this.nextDir = { x: -1, y: 0 };
 
-        this.speed = config.speed ?? 140;
-
+        this.speed = config.speed;
         this.scatterTarget = config.scatterTarget;
 
         // Visual
         this.gfx = scene.add.graphics();
         this.gfx.setDepth(5);
 
-        // Mode control (scene sets this each tick)
         this.mode = "scatter"; // "scatter" | "chase"
     }
 
@@ -47,14 +46,19 @@ export default class Ghost {
         this.gfx?.destroy();
     }
 
-    getCenteredTile() {
-        const ts = this.scene.TILE_SIZE;
-        return {
-            x: Math.floor(this.x / ts),
-            y: Math.floor(this.y / ts),
-        };
+    // ---------- wrapping helpers (tile-space) ----------
+    wrapTileX(x) {
+        const cols = this.scene.levelCols;
+        if (x < 0) return cols - 1;
+        if (x >= cols) return 0;
+        return x;
     }
 
+    isInBoundsY(y) {
+        return y >= 0 && y < this.scene.levelRows;
+    }
+
+    // ---------- movement helpers ----------
     isCenteredOnTile() {
         const ts = this.scene.TILE_SIZE;
         const cx = this.tileX * ts + ts / 2;
@@ -62,11 +66,14 @@ export default class Ghost {
         return Math.abs(this.x - cx) < 1 && Math.abs(this.y - cy) < 1;
     }
 
-    isPassable(tx, ty) {
-        return !!this.scene.passable?.[ty]?.[tx];
+    // IMPORTANT: ghost passability should evaluate with wrapped X
+    isPassable(toX, toY) {
+        const wrappedX = this.wrapTileX(toX);
+        if (!this.isInBoundsY(toY)) return false;
+        return this.scene.isGhostPassable(this.tileX, this.tileY, wrappedX, toY);
     }
 
-    // same horizontal wrap behavior as pacman
+    // Pixel wrap (keeps visual position consistent)
     wrapIfNeeded() {
         const ts = this.scene.TILE_SIZE;
         const cols = this.scene.levelCols;
@@ -81,17 +88,12 @@ export default class Ghost {
         }
     }
 
-    // Euclidean distance in tile-space (good enough)
     dist2(ax, ay, bx, by) {
         const dx = ax - bx;
         const dy = ay - by;
         return dx * dx + dy * dy;
     }
 
-    // Choose direction at intersections:
-    // - can’t go into walls
-    // - prefer not reversing unless forced
-    // - pick option that minimizes distance to target
     chooseDirection(targetTile) {
         const options = [
             { x: 1, y: 0 },
@@ -102,16 +104,14 @@ export default class Ghost {
 
         const reverse = { x: -this.dir.x, y: -this.dir.y };
 
+        // Build valid moves (with wrapped X)
         const valid = options.filter((d) => {
             const nx = this.tileX + d.x;
             const ny = this.tileY + d.y;
-            if (!this.isPassable(nx, ny)) return false;
-            return true;
+            return this.isPassable(nx, ny);
         });
 
-        if (valid.length === 0) {
-            return reverse; // trapped; shrug
-        }
+        if (valid.length === 0) return reverse;
 
         // avoid reversing if we have other choices
         const nonReverse =
@@ -125,7 +125,7 @@ export default class Ghost {
         let bestScore = Infinity;
 
         for (const d of pool) {
-            const nx = this.tileX + d.x;
+            const nx = this.wrapTileX(this.tileX + d.x);
             const ny = this.tileY + d.y;
             const score = this.dist2(nx, ny, targetTile.x, targetTile.y);
             if (score < bestScore) {
@@ -138,20 +138,15 @@ export default class Ghost {
     }
 
     getTarget(pacmanTile) {
-        // Scatter: go to assigned corner-ish tile
         if (this.mode === "scatter") return this.scatterTarget;
-
-        // Chase: go directly to pacman tile (simple baseline)
-        return pacmanTile;
+        return pacmanTile; // simple chase baseline
     }
 
     update(delta, pacmanTile) {
         const ts = this.scene.TILE_SIZE;
 
-        // Make sure we never drift into invalid tiles vertically.
-        // If something went wrong, snap back onto current tile center.
+        // If our CURRENT tile is somehow invalid, snap to center (local recovery)
         if (!this.isPassable(this.tileX, this.tileY)) {
-            // find nearest passable around (small local fix)
             const neighbors = [
                 { x: this.tileX, y: this.tileY },
                 { x: this.tileX + 1, y: this.tileY },
@@ -159,9 +154,10 @@ export default class Ghost {
                 { x: this.tileX, y: this.tileY + 1 },
                 { x: this.tileX, y: this.tileY - 1 },
             ];
+
             const found = neighbors.find((p) => this.isPassable(p.x, p.y));
             if (found) {
-                this.tileX = found.x;
+                this.tileX = this.wrapTileX(found.x);
                 this.tileY = found.y;
             }
             this.x = this.tileX * ts + ts / 2;
@@ -175,8 +171,6 @@ export default class Ghost {
 
             const target = this.getTarget(pacmanTile);
 
-            // If forward is blocked, or if we're at an intersection, choose.
-            // Intersection heuristic: if more than 2 valid moves, it's an intersection.
             const moves = [
                 { x: 1, y: 0 },
                 { x: -1, y: 0 },
@@ -191,10 +185,10 @@ export default class Ghost {
                 this.dir = this.chooseDirection(target);
             }
 
-            // Advance logical tile target
+            // Advance logical tile target (with wrap)
             if (this.isPassable(this.tileX + this.dir.x, this.tileY + this.dir.y)) {
-                this.tileX += this.dir.x;
-                this.tileY += this.dir.y;
+                this.tileX = this.wrapTileX(this.tileX + this.dir.x);
+                this.tileY = this.tileY + this.dir.y;
             }
         }
 
@@ -203,10 +197,9 @@ export default class Ghost {
         this.x += this.dir.x * step;
         this.y += this.dir.y * step;
 
-        // Wrap horizontally
+        // Wrap horizontally in pixel-space too (tunnel)
         this.wrapIfNeeded();
 
-        // Draw
         this.draw();
     }
 

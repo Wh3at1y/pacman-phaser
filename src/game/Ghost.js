@@ -1,212 +1,362 @@
+// Ghost.js
 import Phaser from "phaser";
 
+const DIRS = [
+    { x: 0, y: -1, name: "UP" },
+    { x: -1, y: 0, name: "LEFT" },
+    { x: 0, y: 1, name: "DOWN" },
+    { x: 1, y: 0, name: "RIGHT" },
+];
+
+function sameDir(a, b) {
+    return a && b && a.x === b.x && a.y === b.y;
+}
+
+function oppositeDir(a, b) {
+    return a && b && a.x === -b.x && a.y === -b.y;
+}
+
+function dist2(ax, ay, bx, by) {
+    const dx = ax - bx;
+    const dy = ay - by;
+    return dx * dx + dy * dy;
+}
+
 export default class Ghost {
-    /**
-     * @param {Phaser.Scene} scene
-     * @param {{
-     *   name: string,
-     *   color: number,
-     *   startTile: {x:number,y:number},
-     *   scatterTarget: {x:number,y:number},
-     *   speed?: number
-     * }} config
-     */
-    constructor(scene, config) {
+    constructor(scene, opts) {
         this.scene = scene;
-        this.name = config.name;
-        this.color = config.color;
 
-        this.tileX = config.startTile.x;
-        this.tileY = config.startTile.y;
+        this.name = opts.name;
+        this.baseColor = opts.color;
+        this.color = opts.color;
 
-        const ts = this.scene.TILE_SIZE;
+        this.speed = opts.speed ?? 140;
 
-        // Pixel center
-        this.x = this.tileX * ts + ts / 2;
-        this.y = this.tileY * ts + ts / 2;
+        this.scatterTarget = opts.scatterTarget ?? { x: 1, y: 1 };
 
-        // Start moving left by default (classic vibe)
-        this.dir = { x: -1, y: 0 };
+        // Tile position (logical)
+        this.tileX = opts.startTile?.x ?? 14;
+        this.tileY = opts.startTile?.y ?? 11;
 
-        this.speed = config.speed;
-        this.scatterTarget = config.scatterTarget;
+        // Pixel position (center of tile)
+        const TS = this.scene.TILE_SIZE;
+        this.x = this.tileX * TS + TS / 2;
+        this.y = this.tileY * TS + TS / 2;
+
+        // Direction state
+        this.dir = { x: 1, y: 0 }; // default right
+        this.nextDir = { x: 1, y: 0 };
+        this.lastDir = { x: 1, y: 0 };
+
+        // Modes
+        this.mode = "scatter"; // "scatter" | "chase"
+        this.frightenedUntil = 0;
 
         // Visual
-        this.gfx = scene.add.graphics();
-        this.gfx.setDepth(5);
+        this.sprite = this.scene.add.circle(this.x, this.y, TS * 0.7, this.color);
+        this.sprite.setDepth(5);
 
-        this.mode = "scatter"; // "scatter" | "chase"
-    }
-
-    setMode(mode) {
-        this.mode = mode;
+        // If your start tile is not passable, nudge to nearest passable.
+        this.snapToNearestPassable();
     }
 
     destroy() {
-        this.gfx?.destroy();
+        this.sprite?.destroy();
     }
 
-    // ---------- wrapping helpers (tile-space) ----------
-    wrapTileX(x) {
+    setMode(mode) {
+        // MainScene calls this every frame.
+        if (mode === "scatter" || mode === "chase") this.mode = mode;
+    }
+
+    // Call from MainScene when Pac-Man eats a power pellet
+    // Example: ghosts.forEach(g => g.setFrightened(7000))
+    setFrightened(durationMs = 6000) {
+        this.frightenedUntil = this.scene.time.now + durationMs;
+        this.setColor(0x0000ff);
+    }
+
+    isFrightened() {
+        return this.scene.time.now < this.frightenedUntil;
+    }
+
+    setColor(hex) {
+        this.color = hex;
+        if (this.sprite) this.sprite.fillColor = hex;
+    }
+
+    resetColorIfNeeded() {
+        if (!this.isFrightened() && this.color !== this.baseColor) {
+            this.setColor(this.baseColor);
+        }
+    }
+
+    snapToNearestPassable() {
+        // If we spawned in a wall/blocked spot, walk outward until we find passable.
+        // Uses ghost rules (so it won’t “spawn” inside forbidden house entry).
+        const cols = this.scene.levelCols;
+        const rows = this.scene.levelRows;
+
+        const ok = (x, y) => {
+            if (y < 0 || y >= rows) return false;
+            if (x < 0) x = cols - 1;
+            if (x >= cols) x = 0;
+            // "from" doesn't matter much here; just test as if coming from itself
+            return this.scene.isGhostPassable(x, y, x, y);
+        };
+
+        if (ok(this.tileX, this.tileY)) return;
+
+        const q = [{ x: this.tileX, y: this.tileY }];
+        const seen = new Set([`${this.tileX},${this.tileY}`]);
+
+        while (q.length) {
+            const p = q.shift();
+            for (const d of DIRS) {
+                let nx = p.x + d.x;
+                const ny = p.y + d.y;
+
+                if (ny < 0 || ny >= rows) continue;
+                if (nx < 0) nx = cols - 1;
+                if (nx >= cols) nx = 0;
+
+                const key = `${nx},${ny}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+
+                if (ok(nx, ny)) {
+                    this.tileX = nx;
+                    this.tileY = ny;
+                    const TS = this.scene.TILE_SIZE;
+                    this.x = nx * TS + TS / 2;
+                    this.y = ny * TS + TS / 2;
+                    this.sprite.setPosition(this.x, this.y);
+                    return;
+                }
+
+                q.push({ x: nx, y: ny });
+            }
+        }
+    }
+
+    atTileCenter() {
+        const TS = this.scene.TILE_SIZE;
+        const cx = this.tileX * TS + TS / 2;
+        const cy = this.tileY * TS + TS / 2;
+        return Math.abs(this.x - cx) < 0.75 && Math.abs(this.y - cy) < 0.75;
+    }
+
+    snapToCenter() {
+        const TS = this.scene.TILE_SIZE;
+        this.x = this.tileX * TS + TS / 2;
+        this.y = this.tileY * TS + TS / 2;
+    }
+
+    wrapXTile(x) {
         const cols = this.scene.levelCols;
         if (x < 0) return cols - 1;
         if (x >= cols) return 0;
         return x;
     }
 
-    isInBoundsY(y) {
-        return y >= 0 && y < this.scene.levelRows;
+    wrapXPixel() {
+        const TS = this.scene.TILE_SIZE;
+        const mapW = this.scene.levelCols * TS;
+
+        if (this.x < -TS / 2) this.x = mapW + TS / 2;
+        else if (this.x > mapW + TS / 2) this.x = -TS / 2;
     }
 
-    // ---------- movement helpers ----------
-    isCenteredOnTile() {
-        const ts = this.scene.TILE_SIZE;
-        const cx = this.tileX * ts + ts / 2;
-        const cy = this.tileY * ts + ts / 2;
-        return Math.abs(this.x - cx) < 1 && Math.abs(this.y - cy) < 1;
+    canStep(fromX, fromY, toX, toY) {
+        // IMPORTANT: use your one-way door rules from MainScene
+        return this.scene.isGhostPassable(fromX, fromY, toX, toY);
     }
 
-    // IMPORTANT: ghost passability should evaluate with wrapped X
-    isPassable(toX, toY) {
-        const wrappedX = this.wrapTileX(toX);
-        if (!this.isInBoundsY(toY)) return false;
-        return this.scene.isGhostPassable(this.tileX, this.tileY, wrappedX, toY);
-    }
-
-    // Pixel wrap (keeps visual position consistent)
-    wrapIfNeeded() {
-        const ts = this.scene.TILE_SIZE;
+    getChaseTarget(pacTile, pacDir) {
+        // Simple classic-ish targets:
+        // - blinky: pacman
+        // - pinky: 4 tiles ahead
+        // - inky: 2 ahead then "vector" from blinky (approx)
+        // - clyde: chase if far, else scatter
         const cols = this.scene.levelCols;
-        const mapWidthPx = cols * ts;
+        const rows = this.scene.levelRows;
 
-        if (this.x < -ts / 2) {
-            this.x = mapWidthPx + ts / 2;
-            this.tileX = cols - 1;
-        } else if (this.x > mapWidthPx + ts / 2) {
-            this.x = -ts / 2;
-            this.tileX = 0;
+        const clampY = (y) => Math.max(0, Math.min(rows - 1, y));
+        const wrapX = (x) => {
+            if (x < 0) return cols - 1;
+            if (x >= cols) return 0;
+            return x;
+        };
+
+        if (!pacDir) pacDir = { x: 1, y: 0 };
+
+        if (this.name === "pinky") {
+            const ahead = 4;
+            return {
+                x: wrapX(pacTile.x + pacDir.x * ahead),
+                y: clampY(pacTile.y + pacDir.y * ahead),
+            };
         }
+
+        if (this.name === "inky") {
+            // Approx classic: target = pacman + 2 ahead, then mirror around blinky.
+            const ahead = 2;
+            const p2 = {
+                x: wrapX(pacTile.x + pacDir.x * ahead),
+                y: clampY(pacTile.y + pacDir.y * ahead),
+            };
+            const blinky = this.scene.ghosts?.find((g) => g.name === "blinky");
+            if (!blinky) return p2;
+
+            const vx = p2.x - blinky.tileX;
+            const vy = p2.y - blinky.tileY;
+            return {
+                x: wrapX(blinky.tileX + vx * 2),
+                y: clampY(blinky.tileY + vy * 2),
+            };
+        }
+
+        if (this.name === "clyde") {
+            const d = Math.sqrt(dist2(this.tileX, this.tileY, pacTile.x, pacTile.y));
+            if (d >= 8) return { x: pacTile.x, y: pacTile.y };
+            return { ...this.scatterTarget };
+        }
+
+        // blinky/default
+        return { x: pacTile.x, y: pacTile.y };
     }
 
-    dist2(ax, ay, bx, by) {
-        const dx = ax - bx;
-        const dy = ay - by;
-        return dx * dx + dy * dy;
-    }
+    chooseDirToward(targetTile) {
+        // Choose legal direction that minimizes distance to target.
+        // Avoid reversing unless forced (Pac-Man rules).
+        const fromX = this.tileX;
+        const fromY = this.tileY;
 
-    chooseDirection(targetTile) {
-        const options = [
-            { x: 1, y: 0 },
-            { x: -1, y: 0 },
-            { x: 0, y: 1 },
-            { x: 0, y: -1 },
-        ];
-
-        const reverse = { x: -this.dir.x, y: -this.dir.y };
-
-        // Build valid moves (with wrapped X)
-        const valid = options.filter((d) => {
-            const nx = this.tileX + d.x;
-            const ny = this.tileY + d.y;
-            return this.isPassable(nx, ny);
-        });
-
-        if (valid.length === 0) return reverse;
-
-        // avoid reversing if we have other choices
-        const nonReverse =
-            valid.length > 1
-                ? valid.filter((d) => !(d.x === reverse.x && d.y === reverse.y))
-                : valid;
-
-        const pool = nonReverse.length > 0 ? nonReverse : valid;
-
-        let best = pool[0];
+        let best = null;
         let bestScore = Infinity;
 
-        for (const d of pool) {
-            const nx = this.wrapTileX(this.tileX + d.x);
-            const ny = this.tileY + d.y;
-            const score = this.dist2(nx, ny, targetTile.x, targetTile.y);
+        const candidates = [];
+
+        for (const d of DIRS) {
+            const toX = this.wrapXTile(fromX + d.x);
+            const toY = fromY + d.y;
+
+            // block vertical out-of-bounds
+            if (toY < 0 || toY >= this.scene.levelRows) continue;
+
+            if (!this.canStep(fromX, fromY, toX, toY)) continue;
+
+            candidates.push(d);
+        }
+
+        // If we have more than 1 option, don't reverse.
+        let usable = candidates;
+        if (candidates.length > 1) {
+            usable = candidates.filter((d) => !oppositeDir(d, this.dir));
+            if (usable.length === 0) usable = candidates;
+        }
+
+        for (const d of usable) {
+            const nx = this.wrapXTile(fromX + d.x);
+            const ny = fromY + d.y;
+
+            const score = dist2(nx, ny, targetTile.x, targetTile.y);
             if (score < bestScore) {
                 bestScore = score;
                 best = d;
             }
         }
 
-        return best;
+        return best ?? this.dir;
     }
 
-    getTarget(pacmanTile) {
-        if (this.mode === "scatter") return this.scatterTarget;
-        return pacmanTile; // simple chase baseline
-    }
+    chooseDirAwayFrom(pacTile) {
+        // Frightened: choose legal direction that MAXIMIZES distance from Pac-Man.
+        const fromX = this.tileX;
+        const fromY = this.tileY;
 
-    update(delta, pacmanTile) {
-        const ts = this.scene.TILE_SIZE;
+        const candidates = [];
 
-        // If our CURRENT tile is somehow invalid, snap to center (local recovery)
-        if (!this.isPassable(this.tileX, this.tileY)) {
-            const neighbors = [
-                { x: this.tileX, y: this.tileY },
-                { x: this.tileX + 1, y: this.tileY },
-                { x: this.tileX - 1, y: this.tileY },
-                { x: this.tileX, y: this.tileY + 1 },
-                { x: this.tileX, y: this.tileY - 1 },
-            ];
-
-            const found = neighbors.find((p) => this.isPassable(p.x, p.y));
-            if (found) {
-                this.tileX = this.wrapTileX(found.x);
-                this.tileY = found.y;
-            }
-            this.x = this.tileX * ts + ts / 2;
-            this.y = this.tileY * ts + ts / 2;
+        for (const d of DIRS) {
+            const toX = this.wrapXTile(fromX + d.x);
+            const toY = fromY + d.y;
+            if (toY < 0 || toY >= this.scene.levelRows) continue;
+            if (!this.canStep(fromX, fromY, toX, toY)) continue;
+            candidates.push(d);
         }
 
-        // Decision point: only change direction when centered
-        if (this.isCenteredOnTile()) {
-            this.x = this.tileX * ts + ts / 2;
-            this.y = this.tileY * ts + ts / 2;
+        let usable = candidates;
+        if (candidates.length > 1) {
+            usable = candidates.filter((d) => !oppositeDir(d, this.dir));
+            if (usable.length === 0) usable = candidates;
+        }
 
-            const target = this.getTarget(pacmanTile);
+        let best = null;
+        let bestScore = -Infinity;
 
-            const moves = [
-                { x: 1, y: 0 },
-                { x: -1, y: 0 },
-                { x: 0, y: 1 },
-                { x: 0, y: -1 },
-            ].filter((d) => this.isPassable(this.tileX + d.x, this.tileY + d.y));
-
-            const forwardOk = this.isPassable(this.tileX + this.dir.x, this.tileY + this.dir.y);
-            const isIntersection = moves.length >= 3;
-
-            if (!forwardOk || isIntersection) {
-                this.dir = this.chooseDirection(target);
-            }
-
-            // Advance logical tile target (with wrap)
-            if (this.isPassable(this.tileX + this.dir.x, this.tileY + this.dir.y)) {
-                this.tileX = this.wrapTileX(this.tileX + this.dir.x);
-                this.tileY = this.tileY + this.dir.y;
+        for (const d of usable) {
+            const nx = this.wrapXTile(fromX + d.x);
+            const ny = fromY + d.y;
+            const score = dist2(nx, ny, pacTile.x, pacTile.y);
+            if (score > bestScore) {
+                bestScore = score;
+                best = d;
             }
         }
 
-        // Move pixels toward next tile
-        const step = (this.speed * delta) / 1000;
-        this.x += this.dir.x * step;
-        this.y += this.dir.y * step;
-
-        // Wrap horizontally in pixel-space too (tunnel)
-        this.wrapIfNeeded();
-
-        this.draw();
+        return best ?? this.dir;
     }
 
-    draw() {
-        const ts = this.scene.TILE_SIZE;
-        this.gfx.clear();
-        this.gfx.fillStyle(this.color, 1);
-        this.gfx.fillCircle(this.x, this.y, ts * 0.7);
+    update(delta, pacTile, pacDir) {
+        // delta is ms
+        this.resetColorIfNeeded();
+
+        const TS = this.scene.TILE_SIZE;
+
+        // Substep movement to prevent speed-based wall phasing.
+        // Any time humans crank speed values, physics gets spicy.
+        let remaining = (this.speed * delta) / 1000;
+
+        const maxStep = TS / 4; // hard clamp
+        while (remaining > 0) {
+            const step = Math.min(maxStep, remaining);
+
+            // If we’re centered, decide direction for the NEXT tile.
+            if (this.atTileCenter()) {
+                this.snapToCenter();
+
+                if (this.isFrightened()) {
+                    this.dir = this.chooseDirAwayFrom(pacTile);
+                } else {
+                    const target =
+                        this.mode === "scatter"
+                            ? this.scatterTarget
+                            : this.getChaseTarget(pacTile, pacDir);
+                    this.dir = this.chooseDirToward(target);
+                }
+
+                // If somehow blocked (rare), just stop.
+                const nextTX = this.wrapXTile(this.tileX + this.dir.x);
+                const nextTY = this.tileY + this.dir.y;
+                if (nextTY < 0 || nextTY >= this.scene.levelRows) break;
+                if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) break;
+
+                // Advance logical tile (like your Pac-Man does)
+                this.tileX = nextTX;
+                this.tileY = nextTY;
+            }
+
+            // Move pixel position toward current dir
+            this.x += this.dir.x * step;
+            this.y += this.dir.y * step;
+
+            // Wrap through tunnel in pixel space
+            this.wrapXPixel();
+
+            remaining -= step;
+        }
+
+        // Sync sprite
+        this.sprite.setPosition(this.x, this.y);
     }
 }

@@ -244,14 +244,14 @@ export default class MainScene extends Phaser.Scene {
                 color: 0x00ffff,
                 startTile: { x: 12, y: 14 },
                 scatterTarget: { x: this.levelCols - 2, y: this.levelRows - 2 },
-                speed: 140,
+                speed: 145,
             }),
             new Ghost(this, {
                 name: "clyde",
                 color: 0xffb852,
                 startTile: { x: 16, y: 14 },
                 scatterTarget: { x: 1, y: this.levelRows - 2 },
-                speed: 140,
+                speed: 145,
             }),
         ];
 
@@ -280,6 +280,37 @@ export default class MainScene extends Phaser.Scene {
         return WALL_TILES.includes(tile);
     }
 
+    // Ghost-specific passability rules.
+    // Ghost.js calls this as: isGhostPassable(fromX, fromY, toX, toY)
+    // - Wraps horizontally (tunnel)
+    // - Blocks solid walls
+    // - Gate tile(s) (~ or ~~): ghosts may EXIT but not ENTER
+    isGhostPassable(fromX, fromY, toX, toY) {
+        const cols = this.levelCols;
+        const rows = this.levelRows;
+
+        // vertical bounds are hard walls
+        if (toY < 0 || toY >= rows) return false;
+
+        // horizontal wrap (tunnel)
+        if (toX < 0) toX = cols - 1;
+        if (toX >= cols) toX = 0;
+
+        const tile = level1[toY]?.[toX];
+        if (!tile) return false;
+
+        // solid wall tiles
+        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
+        if (walls.includes(tile)) return false;
+
+        // ghost-house gate: allow exit (moving UP out of the house), block entry
+        if (tile === "~~" || tile === "~") {
+            return fromY > toY;
+        }
+
+        return true;
+    }
+
     isPacmanPassable(toX, toY) {
         const rows = level1.length;
         const cols = level1[0].length;
@@ -294,7 +325,8 @@ export default class MainScene extends Phaser.Scene {
         const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
 
         if (walls.includes(tile)) return false;
-        if (tile === "~~") return false;
+        // Pac-Men cannot pass the ghost-house gate tiles
+        if (tile === "~~" || tile === "~") return false;
 
         return true;
     }

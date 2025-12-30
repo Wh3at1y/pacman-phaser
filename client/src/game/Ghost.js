@@ -38,6 +38,9 @@ export default class Ghost {
         this.tileX = opts.startTile?.x ?? 14;
         this.tileY = opts.startTile?.y ?? 11;
 
+        // Remember home/start tile for resets (death, eaten, new round)
+        this.startTile = { x: this.tileX, y: this.tileY };
+
         // Pixel position (center of tile)
         const TS = this.scene.TILE_SIZE;
         this.x = this.tileX * TS + TS / 2;
@@ -62,6 +65,33 @@ export default class Ghost {
 
     destroy() {
         this.sprite?.destroy();
+    }
+
+    reset() {
+        // Reset back to the ghost's start tile and clear frightened state.
+        this.tileX = this.startTile.x;
+        this.tileY = this.startTile.y;
+
+        const TS = this.scene.TILE_SIZE;
+        this.x = this.tileX * TS + TS / 2;
+        this.y = this.tileY * TS + TS / 2;
+
+        this.dir = { x: 1, y: 0 };
+        this.nextDir = { x: 1, y: 0 };
+        this.lastDir = { x: 1, y: 0 };
+
+        this.frightenedUntil = 0;
+        this.setColor(this.baseColor);
+
+        this.sprite?.setPosition(this.x, this.y);
+
+        // Safety: if start tile ended up invalid due to map edits, nudge to nearest.
+        this.snapToNearestPassable();
+    }
+
+    onEaten() {
+        // Called when Pac-Man hits a frightened ghost.
+        this.reset();
     }
 
     setMode(mode) {

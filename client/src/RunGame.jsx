@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import Phaser from "phaser";
 import MainScene from "./game/scenes/MainScene";
 
-export default function PacmanGame() {
+export default function PacmanGame({players, currentPlayer}) {
     const containerRef = useRef(null);
     const gameRef = useRef(null);
 
@@ -31,7 +31,7 @@ export default function PacmanGame() {
             physics: { default: "arcade", arcade: { debug: false } },
 
             // ✅ Pass the callback into the scene instance
-            scene: [new MainScene(onHudUpdate)],
+            scene: [new MainScene(onHudUpdate, players, currentPlayer)],
         };
 
         gameRef.current = new Phaser.Game(config);

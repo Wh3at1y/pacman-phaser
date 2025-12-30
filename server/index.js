@@ -50,6 +50,22 @@ io.on("connection", (socket) => {
         io.emit("joined", Object.fromEntries(players.entries()));
     });
 
+    socket.on("KeyPressed", (event, socketId) => {
+        if (event === "ArrowUp" || event === "ArrowDown" || event === "ArrowLeft" || event === "ArrowRight") {
+            console.log('HIT SOCKET MOVEMENT!!!', event);
+            console.log('SocketId', socketId)
+            io.emit('KeyPressed', event, socketId, players.get(playerId)?.playerId)
+        }
+    });
+
+    socket.on("start_game", () => {
+        io.emit("start_game_all")
+    })
+
+    socket.on("PlayerState", (payload) => {
+        io.emit("PlayerState", payload);
+    })
+
     socket.on("disconnect", () => {
         const p = players.get(playerId);
         if (!p) return;

@@ -1,35 +1,10 @@
 import React, {useEffect, useState} from 'react';
-import {io} from "socket.io-client"
-
 import './lobby.css'
 import RunGame from "./RunGame.jsx";
 
-const getOrCreatePlayerId = () => {
-    const key = "lobby_player_id";
-    let id = localStorage.getItem(key);
-    if (!id) {
-        // Works in modern browsers. If you need older support, use uuid lib.
-        id = crypto.randomUUID();
-        localStorage.setItem(key, id);
-    }
-    return id;
-};
+import socket from "./socket";
 
 
-const initializeSocket = () => {
-    if (!window.socket) {
-        const playerId = getOrCreatePlayerId();
-
-        window.socket = io("localhost:3001", {
-            transports: ["websocket"],          // optional but helps with ngrok weirdness
-            auth: { playerId },                 // send stable identity
-            reconnection: true,
-        });
-    }
-    return window.socket;
-};
-
-const socket = initializeSocket();
 
 export default function Lobby() {
     const [isConnecting, setIsConnecting] = useState(true)
@@ -48,8 +23,13 @@ export default function Lobby() {
             setPlayers(Object.values(playersMap));
         };
 
+        const startGame = () => {
+            setStartGame(true)
+        }
+
         socket.on("connect", onConnect);
         socket.on("joined", onJoined);
+        socket.on("start_game_all", startGame);
 
         return () => {
             socket.off("connect", onConnect);
@@ -64,9 +44,13 @@ export default function Lobby() {
         socket.emit("player_ready");
     };
 
+    const handleStart = () => {
+        socket.emit("start_game");
+    }
+
     const currentPlayer = players.find(player => player.socketId === socket.id) || null
 
-    return startGame ? <RunGame /> : <div>
+    return startGame ? <RunGame players={players} currentPlayer={currentPlayer} /> : <div>
         {isConnecting || !currentPlayer ? <h1>Connecting to Server...</h1> : <div className="lobby">
             <header className="lobby__header">
                 <div>
@@ -131,7 +115,7 @@ export default function Lobby() {
                     <div className="actions">
                         {currentPlayer.ready ? <button className="btn btn--primary" type="button" onClick={onReady}>Un-Ready</button> : <button className="btn btn--primary" type="button" onClick={onReady}>Ready Up</button>}
                         <button className="btn btn--ghost" type="button">PAC-MEN</button>
-                        <button className="btn btn--ghost" type="button" onClick={() => setStartGame(true)}>Start Game</button>
+                        <button className="btn btn--ghost" type="button" onClick={handleStart}>Start Game</button>
 
                         <div className="hint">
                             <p className="hint__title">Tip</p>

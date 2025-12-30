@@ -15,6 +15,7 @@ export default class MainScene extends Phaser.Scene {
     preload() {
         this.load.audio("roundStart", "start.mp3");
         this.load.audio("eat", "eating.mp3");
+        this.load.audio("dead", "dead.mp3");
     }
 
     create() {
@@ -25,7 +26,7 @@ export default class MainScene extends Phaser.Scene {
         this.cameras.main.setZoom(1);
 
         this.isDying = false;
-        this.deathDelayMs = 1000; // tweak if you want
+        this.deathDelayMs = 4000; // tweak if you want
 
 
         // ---- ROUND STATE ----
@@ -220,6 +221,7 @@ export default class MainScene extends Phaser.Scene {
     killPacman() {
         if (this.isDying) return;
         this.isDying = true;
+        this.sound.play("dead", { volume: 0.5})
 
         // stop gameplay + audio immediately
         this.isRoundActive = false;

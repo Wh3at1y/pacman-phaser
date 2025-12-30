@@ -34,7 +34,7 @@ const socket = initializeSocket();
 export default function Lobby() {
     const [isConnecting, setIsConnecting] = useState(true)
     const [players, setPlayers] = useState([])
-    const [startGame, setStartGame] = useState(false)
+    const [startGame, setStartGame] = useState(true)
 
 
     useEffect(() => {

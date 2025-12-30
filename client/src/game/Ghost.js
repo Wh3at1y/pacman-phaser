@@ -8,10 +8,6 @@ const DIRS = [
     { x: 1, y: 0, name: "RIGHT" },
 ];
 
-function sameDir(a, b) {
-    return a && b && a.x === b.x && a.y === b.y;
-}
-
 function oppositeDir(a, b) {
     return a && b && a.x === -b.x && a.y === -b.y;
 }
@@ -31,14 +27,13 @@ export default class Ghost {
         this.color = opts.color;
 
         this.speed = opts.speed ?? 140;
-
         this.scatterTarget = opts.scatterTarget ?? { x: 1, y: 1 };
 
         // Tile position (logical)
         this.tileX = opts.startTile?.x ?? 14;
         this.tileY = opts.startTile?.y ?? 11;
 
-        // Remember home/start tile for resets (death, eaten, new round)
+        // Remember home/start tile for resets
         this.startTile = { x: this.tileX, y: this.tileY };
 
         // Pixel position (center of tile)
@@ -48,23 +43,46 @@ export default class Ghost {
 
         // Direction state
         this.dir = { x: 1, y: 0 }; // default right
-        this.nextDir = { x: 1, y: 0 };
-        this.lastDir = { x: 1, y: 0 };
 
         // Modes
         this.mode = "scatter"; // "scatter" | "chase"
         this.frightenedUntil = 0;
 
+        // Ghost-house state machine
+        // "inHouse" -> waits/bounces inside box
+        // "leaving" -> path to door and exits
+        // "active"  -> normal AI
+        this.house = {
+            enabled: false,
+            doorTiles: [], // [{x,y}, ...] tiles that are '~'
+            exitTile: null, // tile just outside door (above)
+            inHouseMinY: null,
+            inHouseMaxY: null,
+            releaseDelayMs: 0,
+        };
+        this.state = "active";
+        this.releaseAt = 0;
+
         // Visual
         this.sprite = this.scene.add.circle(this.x, this.y, TS * 0.7, this.color);
         this.sprite.setDepth(5);
 
-        // If your start tile is not passable, nudge to nearest passable.
+        // If start tile is not passable, nudge to nearest passable.
         this.snapToNearestPassable();
     }
 
     destroy() {
         this.sprite?.destroy();
+    }
+
+    configureHouse(cfg) {
+        // called by MainScene after scanning level
+        this.house.enabled = true;
+        this.house.doorTiles = cfg.doorTiles ?? [];
+        this.house.exitTile = cfg.exitTile ?? null;
+        this.house.inHouseMinY = cfg.inHouseMinY ?? null;
+        this.house.inHouseMaxY = cfg.inHouseMaxY ?? null;
+        this.house.releaseDelayMs = cfg.releaseDelayMs ?? 0;
     }
 
     reset() {
@@ -77,30 +95,32 @@ export default class Ghost {
         this.y = this.tileY * TS + TS / 2;
 
         this.dir = { x: 1, y: 0 };
-        this.nextDir = { x: 1, y: 0 };
-        this.lastDir = { x: 1, y: 0 };
 
         this.frightenedUntil = 0;
         this.setColor(this.baseColor);
 
         this.sprite?.setPosition(this.x, this.y);
 
-        // Safety: if start tile ended up invalid due to map edits, nudge to nearest.
         this.snapToNearestPassable();
+
+        // House reset (per round)
+        if (this.house.enabled && this.scene.isGhostHouseTile?.(this.tileX, this.tileY)) {
+            this.state = "inHouse";
+            this.releaseAt = this.scene.time.now + (this.house.releaseDelayMs ?? 0);
+        } else {
+            this.state = "active";
+            this.releaseAt = 0;
+        }
     }
 
     onEaten() {
-        // Called when Pac-Man hits a frightened ghost.
         this.reset();
     }
 
     setMode(mode) {
-        // MainScene calls this every frame.
         if (mode === "scatter" || mode === "chase") this.mode = mode;
     }
 
-    // Call from MainScene when Pac-Man eats a power pellet
-    // Example: ghosts.forEach(g => g.setFrightened(7000))
     setFrightened(durationMs = 6000) {
         this.frightenedUntil = this.scene.time.now + durationMs;
         this.setColor(0x0000ff);
@@ -122,8 +142,6 @@ export default class Ghost {
     }
 
     snapToNearestPassable() {
-        // If we spawned in a wall/blocked spot, walk outward until we find passable.
-        // Uses ghost rules (so it won’t “spawn” inside forbidden house entry).
         const cols = this.scene.levelCols;
         const rows = this.scene.levelRows;
 
@@ -131,7 +149,6 @@ export default class Ghost {
             if (y < 0 || y >= rows) return false;
             if (x < 0) x = cols - 1;
             if (x >= cols) x = 0;
-            // "from" doesn't matter much here; just test as if coming from itself
             return this.scene.isGhostPassable(x, y, x, y);
         };
 
@@ -198,16 +215,10 @@ export default class Ghost {
     }
 
     canStep(fromX, fromY, toX, toY) {
-        // IMPORTANT: use your one-way door rules from MainScene
         return this.scene.isGhostPassable(fromX, fromY, toX, toY);
     }
 
     getChaseTarget(pacTile, pacDir) {
-        // Simple classic-ish targets:
-        // - blinky: pacman
-        // - pinky: 4 tiles ahead
-        // - inky: 2 ahead then "vector" from blinky (approx)
-        // - clyde: chase if far, else scatter
         const cols = this.scene.levelCols;
         const rows = this.scene.levelRows;
 
@@ -229,7 +240,6 @@ export default class Ghost {
         }
 
         if (this.name === "inky") {
-            // Approx classic: target = pacman + 2 ahead, then mirror around blinky.
             const ahead = 2;
             const p2 = {
                 x: wrapX(pacTile.x + pacDir.x * ahead),
@@ -252,13 +262,10 @@ export default class Ghost {
             return { ...this.scatterTarget };
         }
 
-        // blinky/default
         return { x: pacTile.x, y: pacTile.y };
     }
 
-    chooseDirToward(targetTile) {
-        // Choose legal direction that minimizes distance to target.
-        // Avoid reversing unless forced (Pac-Man rules).
+    chooseDirToward(targetTile, allowReverse = false) {
         const fromX = this.tileX;
         const fromY = this.tileY;
 
@@ -271,17 +278,14 @@ export default class Ghost {
             const toX = this.wrapXTile(fromX + d.x);
             const toY = fromY + d.y;
 
-            // block vertical out-of-bounds
             if (toY < 0 || toY >= this.scene.levelRows) continue;
-
             if (!this.canStep(fromX, fromY, toX, toY)) continue;
 
             candidates.push(d);
         }
 
-        // If we have more than 1 option, don't reverse.
         let usable = candidates;
-        if (candidates.length > 1) {
+        if (!allowReverse && candidates.length > 1) {
             usable = candidates.filter((d) => !oppositeDir(d, this.dir));
             if (usable.length === 0) usable = candidates;
         }
@@ -289,7 +293,6 @@ export default class Ghost {
         for (const d of usable) {
             const nx = this.wrapXTile(fromX + d.x);
             const ny = fromY + d.y;
-
             const score = dist2(nx, ny, targetTile.x, targetTile.y);
             if (score < bestScore) {
                 bestScore = score;
@@ -301,7 +304,6 @@ export default class Ghost {
     }
 
     chooseDirAwayFrom(pacTile) {
-        // Frightened: choose legal direction that MAXIMIZES distance from Pac-Man.
         const fromX = this.tileX;
         const fromY = this.tileY;
 
@@ -337,22 +339,118 @@ export default class Ghost {
         return best ?? this.dir;
     }
 
+    // --- Ghost house logic ---
+    _closestDoorTile() {
+        if (!this.house?.doorTiles?.length) return null;
+        let best = this.house.doorTiles[0];
+        let bestD = Infinity;
+        for (const t of this.house.doorTiles) {
+            const d = dist2(this.tileX, this.tileY, t.x, t.y);
+            if (d < bestD) {
+                bestD = d;
+                best = t;
+            }
+        }
+        return best;
+    }
+
+    _updateHouseState(delta) {
+        // Handle inHouse / leaving behavior and set this.dir accordingly.
+        if (!this.house.enabled) return;
+
+        if (this.state === "inHouse") {
+            // Wait until scheduled release time
+            if (this.scene.time.now >= this.releaseAt) {
+                this.state = "leaving";
+                return;
+            }
+
+            // Simple bounce up/down inside the X region so they look alive.
+            if (this.atTileCenter()) {
+                this.snapToCenter();
+                const minY = this.house.inHouseMinY ?? this.tileY;
+                const maxY = this.house.inHouseMaxY ?? this.tileY;
+
+                // If moving up would leave the house region, go down, and vice-versa.
+                if (this.dir.y === -1 && this.tileY <= minY) this.dir = { x: 0, y: 1 };
+                else if (this.dir.y === 1 && this.tileY >= maxY) this.dir = { x: 0, y: -1 };
+                else if (this.dir.y === 0) this.dir = { x: 0, y: -1 }; // start by going up
+
+                const nextTX = this.wrapXTile(this.tileX + this.dir.x);
+                const nextTY = this.tileY + this.dir.y;
+                if (nextTY < 0 || nextTY >= this.scene.levelRows) return;
+                if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) {
+                    // flip if blocked
+                    this.dir = { x: 0, y: -this.dir.y };
+                }
+
+                const nTX = this.wrapXTile(this.tileX + this.dir.x);
+                const nTY = this.tileY + this.dir.y;
+                if (this.canStep(this.tileX, this.tileY, nTX, nTY)) {
+                    this.tileX = nTX;
+                    this.tileY = nTY;
+                }
+            }
+
+            // Movement happens in main update loop
+            return;
+        }
+
+        if (this.state === "leaving") {
+            const door = this._closestDoorTile();
+            const exit = this.house.exitTile;
+
+            if (!door || !exit) {
+                this.state = "active";
+                return;
+            }
+
+            if (this.atTileCenter()) {
+                this.snapToCenter();
+
+                // If we're on the door tile, force UP through the gate.
+                if (this.tileX === door.x && this.tileY === door.y) {
+                    this.dir = { x: 0, y: -1 };
+                } else {
+                    // Go to the door tile (allow reverse so it doesn't dumbly ping-pong)
+                    this.dir = this.chooseDirToward(door, true);
+                }
+
+                const nextTX = this.wrapXTile(this.tileX + this.dir.x);
+                const nextTY = this.tileY + this.dir.y;
+
+                if (nextTY < 0 || nextTY >= this.scene.levelRows) return;
+                if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) return;
+
+                this.tileX = nextTX;
+                this.tileY = nextTY;
+
+                // Once we're above the door and in the corridor, go active.
+                if (this.tileY <= exit.y) {
+                    this.state = "active";
+                }
+            }
+
+            return;
+        }
+    }
+
     update(delta, pacTile, pacDir) {
-        // delta is ms
         this.resetColorIfNeeded();
 
         const TS = this.scene.TILE_SIZE;
 
-        // Substep movement to prevent speed-based wall phasing.
-        // Any time humans crank speed values, physics gets spicy.
-        let remaining = (this.speed * delta) / 1000;
+        // Decide special house state first (may set dir + tile steps)
+        this._updateHouseState(delta);
 
-        const maxStep = TS / 4; // hard clamp
+        let remaining = (this.speed * delta) / 1000;
+        const maxStep = TS / 4;
+
         while (remaining > 0) {
             const step = Math.min(maxStep, remaining);
 
-            // If we’re centered, decide direction for the NEXT tile.
-            if (this.atTileCenter()) {
+            // Only run normal AI when active
+            if (this.state === "active" && this.atTileCenter()) {
                 this.snapToCenter();
 
                 if (this.isFrightened()) {
@@ -365,28 +463,24 @@ export default class Ghost {
                     this.dir = this.chooseDirToward(target);
                 }
 
-                // If somehow blocked (rare), just stop.
                 const nextTX = this.wrapXTile(this.tileX + this.dir.x);
                 const nextTY = this.tileY + this.dir.y;
                 if (nextTY < 0 || nextTY >= this.scene.levelRows) break;
                 if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) break;
 
-                // Advance logical tile (like your Pac-Man does)
                 this.tileX = nextTX;
                 this.tileY = nextTY;
             }
 
-            // Move pixel position toward current dir
+            // Move pixel position
             this.x += this.dir.x * step;
             this.y += this.dir.y * step;
 
-            // Wrap through tunnel in pixel space
             this.wrapXPixel();
 
             remaining -= step;
         }
 
-        // Sync sprite
         this.sprite.setPosition(this.x, this.y);
     }
 }

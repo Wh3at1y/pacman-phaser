@@ -228,7 +228,7 @@ export default class MainScene extends Phaser.Scene {
             new Ghost(this, {
                 name: "blinky",
                 color: 0xff0000,
-                startTile: { x: 14, y: 11 },
+                startTile: { x: 13, y: 13 },
                 scatterTarget: { x: this.levelCols - 2, y: 1 },
                 speed: 145,
             }),
@@ -255,6 +255,24 @@ export default class MainScene extends Phaser.Scene {
             }),
         ];
 
+        // ---- GHOST HOUSE SETUP (release schedule) ----
+        const houseInfo = this._buildGhostHouseInfo();
+
+        const releaseByName = {
+            blinky: 1000,
+            pinky: 1500,
+            inky: 4500,
+            clyde: 7500,
+        };
+
+        for (const g of this.ghosts) {
+            g.configureHouse?.({
+                ...houseInfo,
+                releaseDelayMs: releaseByName[g.name] ?? 0,
+            });
+        }
+
+
 
         // ---- HUD ----
         this.onHudUpdate?.({
@@ -279,6 +297,41 @@ export default class MainScene extends Phaser.Scene {
     isWallTile(tile) {
         return WALL_TILES.includes(tile);
     }
+
+    isGhostHouseTile(x, y) {
+        return level1?.[y]?.[x] === "X";
+    }
+
+    _buildGhostHouseInfo() {
+        // Door tiles are the '~' tiles
+        const doorTiles = [];
+        let minHouseY = Infinity;
+        let maxHouseY = -Infinity;
+
+        for (let y = 0; y < this.levelRows; y++) {
+            for (let x = 0; x < this.levelCols; x++) {
+                const t = level1[y][x];
+                if (t === "~") doorTiles.push({ x, y });
+                if (t === "X") {
+                    minHouseY = Math.min(minHouseY, y);
+                    maxHouseY = Math.max(maxHouseY, y);
+                }
+            }
+        }
+
+        // Exit tile: just above the left door tile (works with your map)
+        // Doors are at (13,12) and (14,12) in your level. :contentReference[oaicite:2]{index=2}
+        const leftDoor = doorTiles.slice().sort((a, b) => a.x - b.x)[0];
+        const exitTile = leftDoor ? { x: leftDoor.x, y: leftDoor.y - 1 } : null;
+
+        return {
+            doorTiles,
+            exitTile,
+            inHouseMinY: minHouseY === Infinity ? null : minHouseY,
+            inHouseMaxY: maxHouseY === -Infinity ? null : maxHouseY,
+        };
+    }
+
 
     // Ghost-specific passability rules.
     // Ghost.js calls this as: isGhostPassable(fromX, fromY, toX, toY)

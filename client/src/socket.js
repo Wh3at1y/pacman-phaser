@@ -16,7 +16,7 @@ const initializeSocket = () => {
     if (!window.socket) {
         const playerId = getOrCreatePlayerId();
 
-        window.socket = io("https://d17185034fab.ngrok-free.app", {
+        window.socket = io({
             transports: ["websocket"],          // optional but helps with ngrok weirdness
             auth: { playerId },                 // send stable identity
             reconnection: true,

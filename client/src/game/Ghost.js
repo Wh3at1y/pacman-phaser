@@ -64,8 +64,10 @@ export default class Ghost {
         this.releaseAt = 0;
 
         // Visual
-        this.sprite = this.scene.add.circle(this.x, this.y, TS * 0.7, this.color);
+        this.sprite = this.scene.add.graphics();
         this.sprite.setDepth(5);
+        this._drawGhost(); // initial draw
+        this.sprite.setPosition(this.x, this.y);
 
         // If start tile is not passable, nudge to nearest passable.
         this.snapToNearestPassable();
@@ -132,7 +134,7 @@ export default class Ghost {
 
     setColor(hex) {
         this.color = hex;
-        if (this.sprite) this.sprite.fillColor = hex;
+        this._drawGhost();
     }
 
     resetColorIfNeeded() {
@@ -435,6 +437,89 @@ export default class Ghost {
         }
     }
 
+    _drawGhost() {
+        if (!this.sprite) return;
+
+        const TS = this.scene.TILE_SIZE;
+
+        // Size tuned to fit your tile circles
+        const w = TS * 1.4;
+        const h = TS * 1.4;
+
+        const halfW = w / 2;
+        const halfH = h / 2;
+
+        // Ghost body geometry
+        const topRadius = halfW;               // rounded head
+        const bottomY = halfH;                 // bottom edge relative to (0,0)
+        const topY = -halfH + topRadius;       // center of head arc
+
+        // Eye settings
+        const eyeOffsetX = w * 0.18;
+        const eyeOffsetY = -h * 0.10;
+        const eyeR = w * 0.13;
+        const pupilR = eyeR * 0.45;
+
+        // Pupil direction
+        const dir = this.dir ?? { x: 1, y: 0 };
+        const lookX = Phaser.Math.Clamp(dir.x, -1, 1) * (eyeR * 0.45);
+        const lookY = Phaser.Math.Clamp(dir.y, -1, 1) * (eyeR * 0.45);
+
+        // Colors
+        const bodyColor = this.isFrightened?.() ? 0x0000ff : this.color;
+        const eyeWhite = 0xffffff;
+        const pupilColor = this.isFrightened?.() ? 0xffffff : 0x0000ff; // classic blue pupils, white when frightened
+
+        // Clear + draw at origin (we position the graphics object via setPosition)
+        this.sprite.clear();
+
+        // ---- BODY ----
+        this.sprite.fillStyle(bodyColor, 1);
+
+        // Head (semi-circle)
+        this.sprite.beginPath();
+        this.sprite.arc(0, topY, topRadius, Math.PI, 0, false);
+
+        // Sides down to bottom
+        this.sprite.lineTo(halfW, bottomY);
+
+        // Wavy bottom (4 bumps)
+        const bumps = 4;
+        const bumpW = w / bumps;
+        const waveDepth = h * 0.15;
+
+        for (let i = 0; i < bumps; i++) {
+            const xRight = halfW - bumpW * i;
+            const xMid = xRight - bumpW / 2;
+            const xLeft = xRight - bumpW;
+
+            // down point
+            this.sprite.lineTo(xMid, bottomY + waveDepth);
+            // up point
+            this.sprite.lineTo(xLeft, bottomY);
+        }
+
+        // Left side back up
+        this.sprite.lineTo(-halfW, topY);
+        this.sprite.closePath();
+        this.sprite.fillPath();
+
+        // ---- EYES ----
+        // White eyeballs
+        this.sprite.fillStyle(eyeWhite, 1);
+        this.sprite.fillCircle(-eyeOffsetX, eyeOffsetY, eyeR);
+        this.sprite.fillCircle(eyeOffsetX, eyeOffsetY, eyeR);
+
+        // Pupils
+        this.sprite.fillStyle(pupilColor, 1);
+        this.sprite.fillCircle(-eyeOffsetX + lookX, eyeOffsetY + lookY, pupilR);
+        this.sprite.fillCircle(eyeOffsetX + lookX, eyeOffsetY + lookY, pupilR);
+
+        // Optional: frightened mouth (simple zigzag) if you want
+        // if (this.isFrightened?.()) { ... }
+    }
+
+
     update(delta, pacTile, pacDir) {
         this.resetColorIfNeeded();
 
@@ -482,5 +567,7 @@ export default class Ghost {
         }
 
         this.sprite.setPosition(this.x, this.y);
+        this._drawGhost();
+
     }
 }

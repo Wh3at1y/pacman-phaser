@@ -59,7 +59,7 @@ export default class Player {
         this.graphics.setDepth(1001);
         this.mouthAngle = 0.15;
         this.mouthOpening = true;
-        this.mouthSpeed = 0.04;
+        this.mouthSpeed = 0.08;
 
         // ---- Remote interpolation ----
         this.netSnapshots = []; // [{t,x,y,tileX,tileY,dir,nextDir}]

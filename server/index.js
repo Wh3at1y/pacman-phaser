@@ -178,11 +178,7 @@ const clientBuildPath = path.join(__dirname, "..", "client", "dist");
 app.use(express.static(clientBuildPath));
 
 // SPA fallback (don’t swallow API routes)
-app.get("*", (req, res) => {
-    if (req.path.startsWith("/api/")) {
-        res.status(404).json({ error: "Not found" });
-        return;
-    }
+app.get(/^\/(?!api\/).*/, (req, res) => {
     res.sendFile(path.join(clientBuildPath, "index.html"));
 });
 

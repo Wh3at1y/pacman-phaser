@@ -83,7 +83,14 @@ export function initSocketServer(server) {
             io.emit("beginRound1")
         })
 
-
+        socket.on("KickPlayer", (targetPlayerId) => {
+            for (const [id, p] of io.sockets.sockets) {
+                if (p.handshake.auth?.playerId === targetPlayerId) {
+                    socket.disconnect(true);
+                    emitLobbyState()
+                }
+            }
+        });
 
         // Initialize Movement
         initializeMovement(socket, io, playerId, joinedPlayers);
@@ -162,6 +169,17 @@ export function initSocketServer(server) {
                 timestamp: Date.now(),
             });
         });
+
+        function kickPlayerByPlayerId(playerId) {
+            for (const [sockId, player] of players.entries()) {
+                if (player.playerId === playerId) {
+                    io.to(sockId).emit("Kicked", { reason: "Removed from game" });
+                    io.to(sockId).disconnect(true);
+                    break;
+                }
+            }
+        }
+
 
         socket.on("disconnect", () => {
             const p = joinedPlayers.get(playerId);

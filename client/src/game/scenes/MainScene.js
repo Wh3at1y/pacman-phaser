@@ -86,7 +86,6 @@ export default class MainScene extends Phaser.Scene {
 
             const p = new Player(this, {
                 startTile,
-                speed: 160,
                 radius: TILE_SIZE * 0.7,
                 controls,
                 socketId: this.currentPlayers[i]?.socketId,
@@ -334,7 +333,7 @@ export default class MainScene extends Phaser.Scene {
             new Ghost(this, {
                 name: "blinky",
                 color: 0xff0000,
-                startTile: { x: 13, y: 13 },
+                startTile: { x: 14, y: 11 },
                 scatterTarget: { x: this.levelCols - 2, y: 1 },
                 speed: 145,
             }),
@@ -458,6 +457,10 @@ export default class MainScene extends Phaser.Scene {
 
         // ghost-house gate: allow exit (moving UP out of the house), block entry
         if (tile === "~~" || tile === "~") {
+            // ✅ occupancy check: standing on the gate is OK
+            if (fromX === toX && fromY === toY) return true;
+
+            // crossing: only allow moving UP out of the house
             return fromY > toY;
         }
 
@@ -625,8 +628,12 @@ export default class MainScene extends Phaser.Scene {
     =============================== */
 
     triggerFrightened() {
-        this.frightenedUntil = this.time.now + this.frightenedMs;
-        for (const g of this.ghosts) g.setFrightened?.(this.frightenedMs);
+        const pac = this.getLocalPlayer?.() || this.players.find(p => !p.isRemote);
+        const pacTile = pac ? { x: pac.tileX, y: pac.tileY } : null;
+
+        for (const g of this.ghosts) {
+            g.setFrightened(6000, pacTile,0); // 2 = near radius in tiles
+        }
     }
 
     updateGhostMode(delta) {

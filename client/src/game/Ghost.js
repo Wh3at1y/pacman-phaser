@@ -124,10 +124,26 @@ export default class Ghost {
         if (mode === "scatter" || mode === "chase") this.mode = mode;
     }
 
-    setFrightened(durationMs = 6000) {
+    setFrightened(durationMs = 6000, pacTile = null, nearTiles = 2) {
         this.frightenedUntil = this.scene.time.now + durationMs;
         this.setColor(0x0000ff);
+
+        // Reverse direction ON frightened start, unless we're near Pac-Man.
+        // "Near" is measured in tiles (Manhattan distance).
+        if (pacTile && this.state === "active") {
+            const dx = Math.abs(this.tileX - pacTile.x);
+            const dy = Math.abs(this.tileY - pacTile.y);
+            const near = (dx + dy) <= nearTiles;
+
+            if (!near) {
+                this.dir = { x: -this.dir.x, y: -this.dir.y };
+            }
+        } else if (this.state === "active") {
+            // If no pacTile provided, default to classic reversal
+            this.dir = { x: -this.dir.x, y: -this.dir.y };
+        }
     }
+
 
     isFrightened() {
         return this.scene.time.now < this.frightenedUntil;

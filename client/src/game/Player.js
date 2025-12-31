@@ -13,7 +13,7 @@ export default class Player {
 
         const {
             startTile,
-            speed = 160,
+            speed = 150,
             radius = scene.TILE_SIZE * 0.7,
             controls = null,
             socketId,

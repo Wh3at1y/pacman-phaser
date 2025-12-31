@@ -15,7 +15,7 @@ const initializeSocket = () => {
     if (!window.socket) {
         const playerId = getOrCreatePlayerId();
 
-        window.socket = io(window.location.href === "http://localhost:5173/" ? "http://localhost:10000" : null,{
+        window.socket = io({
             transports: ["websocket"],          // optional but helps with ngrok weirdness
             auth: { playerId },                 // send stable identity
             reconnection: true,

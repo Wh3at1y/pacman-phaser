@@ -7,7 +7,7 @@ import socket from "../../socket.js";
 const TILE_SIZE = 24;
 
 // Up to 4 Pac-Men (same properties, different controls + spawn tiles)
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS = 5;
 const PACMAN_START_TILES = [
     { x: 13, y: 23 }, // P1
     { x: 10, y: 23 }, // P2
@@ -15,7 +15,7 @@ const PACMAN_START_TILES = [
     { x: 13, y: 26 }, // P4
 ];
 
-const colors = [0xffff00, 0x800080, 0xffffff, 0x008000];
+const colors = [0xffff00, 0x800080, 0xffffff, 0x008000, 0xff0fff];
 
 // Wall symbols (your ASCII maze)
 const WALL_TILES = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-", "~"];

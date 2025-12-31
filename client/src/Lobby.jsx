@@ -5,13 +5,10 @@ import RunGame from "./RunGame.jsx";
 import socket from "./socket";
 import Chat from "./components/Chat.js";
 
-
-
 export default function Lobby() {
     const [isConnecting, setIsConnecting] = useState(true)
     const [players, setPlayers] = useState([])
     const [startGame, setStartGame] = useState(false)
-
 
     useEffect(() => {
         const onConnect = () => {

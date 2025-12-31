@@ -21,6 +21,9 @@ const playerNames = ["ButterBall", "Chowder", "BubbleWrap", "OrbitGum"];
 // playerId -> { playerId, name, ready, socketId, lastSeen }
 const players = new Map();
 
+// ---- Ghost authority (one client simulates ghosts; everyone else renders snapshots)
+let ghostHostPlayerId = null;
+
 // ----- Express + HTTP server -----
 const app = express();
 app.use(express.json());
@@ -53,6 +56,38 @@ function pickName() {
     return pool[Math.floor(Math.random() * pool.length)];
 }
 
+function isOnlineSocketId(socketId) {
+    return !!socketId && io.sockets.sockets.has(socketId);
+}
+
+function pickFirstOnlinePlayerId() {
+    for (const [pid, p] of players.entries()) {
+        if (isOnlineSocketId(p.socketId)) return pid;
+    }
+    return null;
+}
+
+function getGhostHostSocketId() {
+    const host = ghostHostPlayerId ? players.get(ghostHostPlayerId) : null;
+    if (!host) return null;
+    if (!isOnlineSocketId(host.socketId)) return null;
+    return host.socketId;
+}
+
+function broadcastGhostHost() {
+    io.emit("ghost_host", {
+        playerId: ghostHostPlayerId,
+        socketId: getGhostHostSocketId(),
+    });
+}
+
+function ensureGhostHost() {
+    // If current host is offline/missing, pick a new one
+    if (getGhostHostSocketId()) return;
+    ghostHostPlayerId = pickFirstOnlinePlayerId();
+    broadcastGhostHost();
+}
+
 io.on("connection", (socket) => {
     const playerId = socket.handshake.auth?.playerId;
 
@@ -79,6 +114,21 @@ io.on("connection", (socket) => {
     // Broadcast lobby state to everyone
     emitLobbyState();
 
+    // If we don't have a ghost host yet, pick one (first online connection wins)
+    ensureGhostHost();
+
+    // Let any client ask who the current ghost host is (so scenes don’t miss the broadcast).
+    socket.on("ghost_host:request", () => {
+        ensureGhostHost();
+        socket.emit("ghost_host", {
+            playerId: ghostHostPlayerId,
+            socketId: getGhostHostSocketId(),
+        });
+    });
+
+    // If the host reconnected (same playerId, new socket.id), tell everyone.
+    if (playerId === ghostHostPlayerId) broadcastGhostHost();
+
     // Toggle ready
     socket.on("player_ready", () => {
         const p = players.get(playerId);
@@ -89,6 +139,10 @@ io.on("connection", (socket) => {
 
     // Start game (keep your existing event names)
     socket.on("start_game", () => {
+        // Whoever starts the game becomes the ghost host.
+        ghostHostPlayerId = playerId;
+        broadcastGhostHost();
+
         io.emit("start_game_all");
     });
 
@@ -124,10 +178,6 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // Optional: if you want to enforce that a player can only send moves for themselves:
-        // const p = players.get(playerId);
-        // if (!p || p.socketId !== socket.id) return;
-
         io.emit("KeyPressed", {
             socketId,
             dir,
@@ -151,6 +201,37 @@ io.on("connection", (socket) => {
         io.emit("PlayerState", msg);
     });
 
+    // --- Ghost state snapshots (ONLY accepted from the current ghost host) ---
+    socket.on("GhostState", (payload) => {
+        const hostSocketId = getGhostHostSocketId();
+        if (!hostSocketId) return;
+        if (socket.id !== hostSocketId) return;
+
+        if (!payload || typeof payload !== "object") return;
+        io.emit("GhostState", payload);
+    });
+
+    // --- Power-dot events (used to sync frightened mode across clients) ---
+    socket.on("PowerDotEaten", (payload) => {
+        // Broadcast to everyone, including host, so ghosts go frightened in sync.
+        io.emit("PowerDotEaten", {
+            ...(payload && typeof payload === "object" ? payload : {}),
+            socketId: socket.id,
+            playerId,
+            t: Date.now(),
+        });
+    });
+
+    // (Optional hook) If you later want to sync round resets, you can broadcast it.
+    socket.on("RoundReset", (payload) => {
+        io.emit("RoundReset", {
+            ...(payload && typeof payload === "object" ? payload : {}),
+            socketId: socket.id,
+            playerId,
+            t: Date.now(),
+        });
+    });
+
     socket.on("chat:message", message => {
         const chatMessage = {
             senderId: socket.id,
@@ -162,12 +243,22 @@ io.on("connection", (socket) => {
         io.emit("chat:message", chatMessage)
     })
 
+
+
     socket.on("disconnect", () => {
         const p = players.get(playerId);
         if (!p) return;
 
         // Don’t delete immediately; refreshes cause disconnect.
         p.lastSeen = Date.now();
+
+        // when a user disconnects or refreshes set ready to false
+        p.ready = false;
+
+        // If the ghost host dropped, pick a new online host right away.
+        if (playerId === ghostHostPlayerId) {
+            ensureGhostHost();
+        }
 
         // (Optional) purge after a grace period:
         // setTimeout(() => {
@@ -183,7 +274,7 @@ io.on("connection", (socket) => {
 
 // ----- Serve React build (single-app deployment) -----
 // Assumes repo layout:
-// /client (React app) -> client/build after build
+// /client (React app) -> client/dist after build
 // /server (this file)
 const clientBuildPath = path.join(__dirname, "..", "client", "dist");
 app.use(express.static(clientBuildPath));

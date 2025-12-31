@@ -63,158 +63,20 @@ export default class MainScene extends Phaser.Scene {
         this.dots = this.add.group();
         this.dotMap = new Map(); // key: "x,y" -> dot
 
-        // ---- GHOST MODE STATE ----
+        // ---- FRIGHTENED ----
+        this.frightenedMs = 7000;
+        this.frightenedUntil = 0;
+
+        // ---- MODE TIMING ----
         this.ghostMode = "scatter";
         this.ghostModeElapsed = 0;
 
-        // frightened state
-        this.frightenedUntil = 0;
-        this.frightenedMs = 7000;
+        // Sounds
+        this.roundStartSound = this.sound.add("roundStart", { volume: 0.35 });
+        this.eatSound = this.sound.add("eatLoop", { volume: 0.12, loop: true });
+        this.deadSound = this.sound.add("dead", { volume: 0.45 });
 
-        // ---- AUDIO ----
-        this.roundStartSound = this.sound.add("roundStart", { volume: 0.1 });
-        this.eatSound = this.sound.add("eatLoop", { loop: true, volume: 0.1 });
-        this.deadSound = this.sound.add("dead", { volume: 0.1 });
-        this.lastEatTime = -999999;
-
-        // ---- PLAYERS ----
-        this.players = [];
-        for (let i = 0; i < this.numPlayers; i++) {
-            const startTile = PACMAN_START_TILES[i] ?? PACMAN_START_TILES[0];
-
-            // Only the local player gets keyboard controls
-            let controls = null;
-            if (this.currentPlayers[i]?.socketId === this.currentPlayer.socketId) {
-                controls = this.input.keyboard.createCursorKeys();
-            }
-
-            const p = new Player(this, {
-                startTile,
-                speed: 160,
-                radius: TILE_SIZE * 0.7,
-                controls,
-                socketId: this.currentPlayers[i]?.socketId,
-                color: colors[i],
-                isRemote: this.currentPlayers[i]?.socketId !== this.currentPlayer.socketId,
-            });
-
-            p.graphics.setDepth(1001);
-            this.players.push(p);
-        }
-
-        // ---- NETWORKING ----
-        // Key idea:
-        // - Send INPUT immediately (keydown) so intent is shared quickly.
-        // - Send STATE at ~20hz (50ms) so remote clients can interpolate smoothly.
-        this.inputSeq = 0;
-        this.stateSeq = 0;
-
-        this._onKeyDown = (event) => {
-            const code = event.code;
-            const isArrow =
-                code === "ArrowUp" || code === "ArrowDown" || code === "ArrowLeft" || code === "ArrowRight";
-            if (!isArrow) return;
-
-            this.socket.emit("KeyPressed", {
-                socketId: this.currentPlayer.socketId,
-                dir: code,
-                seq: ++this.inputSeq,
-            });
-        };
-
-        this.input.keyboard.on("keydown", this._onKeyDown);
-
-        this._onKeyPressed = ({ socketId, dir, seq }) => {
-            if (socketId === this.currentPlayer.socketId) return;
-
-            const p = this.players.find((pl) => pl.socketId === socketId);
-            if (!p) return;
-
-            p.lastInputSeq = p.lastInputSeq ?? 0;
-            if (seq != null && seq <= p.lastInputSeq) return;
-            if (seq != null) p.lastInputSeq = seq;
-
-            p.setNextDirection(dir); // ArrowUp etc
-        };
-        this.socket.on("KeyPressed", this._onKeyPressed);
-
-        // State tick: send our *pixel* position too, so remote doesn't "teleport tile centers".
-        this.netTick = this.time.addEvent({
-            delay: 50,
-            loop: true,
-            callback: () => {
-                const p = this.getLocalPlayer();
-                if (!p) return;
-
-                this.socket.emit("PlayerState", {
-                    socketId: p.socketId,
-                    x: p.sprite.x,
-                    y: p.sprite.y,
-                    tileX: p.tileX,
-                    tileY: p.tileY,
-                    dir: p.direction,
-                    nextDir: p.nextDirection,
-                    seq: ++this.stateSeq,
-                });
-            },
-        });
-
-        this._onPlayerState = (state) => {
-            const { socketId, x, y, tileX, tileY, dir, nextDir, seq } = state ?? {};
-            if (!socketId || socketId === this.currentPlayer.socketId) return;
-
-            const p = this.players.find((pl) => pl.socketId === socketId);
-            if (!p) return;
-
-            p.lastStateSeq = p.lastStateSeq ?? 0;
-            if (seq != null && seq <= p.lastStateSeq) return;
-            if (seq != null) p.lastStateSeq = seq;
-
-            // Snapshot time is *local receive time* for consistent interpolation.
-            p.pushNetSnapshot({
-                t: this.time.now,
-                x: typeof x === "number" ? x : tileX * TILE_SIZE + TILE_SIZE / 2,
-                y: typeof y === "number" ? y : tileY * TILE_SIZE + TILE_SIZE / 2,
-                tileX,
-                tileY,
-                dir,
-                nextDir,
-            });
-        };
-        this.socket.on("PlayerState", this._onPlayerState);
-
-        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-            this.input.keyboard.off("keydown", this._onKeyDown);
-            this.socket.off("KeyPressed", this._onKeyPressed);
-            this.socket.off("PlayerState", this._onPlayerState);
-            this.netTick?.remove?.();
-        });
-
-        // ---- READY OVERLAY ----
-        this.readyOverlay = this.add
-            .rectangle(
-                (this.levelCols * TILE_SIZE) / 2,
-                (this.levelRows * TILE_SIZE) / 2,
-                this.levelCols * TILE_SIZE,
-                60,
-                0x000000,
-                0.75
-            )
-            .setDepth(1000)
-            .setVisible(false);
-
-        this.readyText = this.add
-            .text((this.levelCols * TILE_SIZE) / 2, (this.levelRows * TILE_SIZE) / 2, "READY!", {
-                fontFamily: "Arial",
-                fontSize: "28px",
-                color: "#00aaff",
-                fontStyle: "bold",
-            })
-            .setOrigin(0.5)
-            .setDepth(1001)
-            .setVisible(false);
-
-        // ---- Build dot sprites from level ----
+        // ---- Build dots from level ----
         this.buildDotsFromLevel();
 
         // ---- LEVEL RENDER ----
@@ -265,14 +127,114 @@ export default class MainScene extends Phaser.Scene {
             clyde: 7500,
         };
 
+        const now = this.time.now;
+
         for (const g of this.ghosts) {
+            const delay = releaseByName[g.name] ?? 0;
+
             g.configureHouse?.({
                 ...houseInfo,
-                releaseDelayMs: releaseByName[g.name] ?? 0,
+                releaseDelayMs: delay,
             });
+
+            // IMPORTANT: if ghost starts in the house, put it in the house state machine
+            if (this.isGhostHouseTile(g.tileX, g.tileY)) {
+                g.state = "inHouse";
+                g.releaseAt = now + delay;
+                g.dir = { x: 0, y: -1 }; // initial bounce direction (up)
+            } else {
+                g.state = "active";
+                g.releaseAt = 0;
+            }
         }
 
 
+        // ---- GHOST AUTHORITY (ONE CLIENT SIMULATES GHOST AI) ----
+        // Server will pick a single socket as the "ghost host" and everyone else will render snapshots.
+        this.ghostHostSocketId = null;
+        this.isGhostHost = false;
+        this.ghostStateSeq = 0;
+        this.ghostNetTick = null;
+
+        this.setGhostAuthority = (isHost) => {
+            if (this.isGhostHost === isHost) return;
+            this.isGhostHost = !!isHost;
+
+            // Non-host clients: ghosts become net-controlled (no AI locally).
+            for (const g of this.ghosts) {
+                g.setNetControlled?.(!this.isGhostHost);
+            }
+
+            // Host: stream authoritative ghost snapshots ~20Hz.
+            if (this.isGhostHost) {
+                this.ghostNetTick?.remove?.();
+                this.ghostNetTick = this.time.addEvent({
+                    delay: 50,
+                    loop: true,
+                    callback: () => {
+                        if (!this.isRoundActive) return;
+
+                        this.socket.emit("GhostState", {
+                            seq: ++this.ghostStateSeq,
+                            t: this.time.now,
+                            ghosts: this.ghosts.map((g) => ({
+                                name: g.name,
+                                x: g.x,
+                                y: g.y,
+                                tileX: g.tileX,
+                                tileY: g.tileY,
+                                dir: g.dir,
+                                mode: g.mode,
+                                frightened: g.isFrightened?.() ?? false,
+                            })),
+                        });
+                    },
+                });
+            } else {
+                this.ghostNetTick?.remove?.();
+                this.ghostNetTick = null;
+            }
+        };
+
+        this._onGhostHost = ({ socketId } = {}) => {
+            this.ghostHostSocketId = socketId ?? null;
+            const amHost = !!this.ghostHostSocketId && this.ghostHostSocketId === this.currentPlayer.socketId;
+            this.setGhostAuthority(amHost);
+        };
+        this.socket.on("ghost_host", this._onGhostHost);
+
+        this._onGhostState = (payload) => {
+            // Only non-host clients apply snapshots.
+            if (this.isGhostHost) return;
+
+            const seq = payload?.seq ?? 0;
+            const t = payload?.t ?? this.time.now;
+            const list = payload?.ghosts;
+            if (!Array.isArray(list)) return;
+
+            for (const gs of list) {
+                const g = this.ghosts.find((gg) => gg.name === gs.name);
+                if (!g) continue;
+                g.pushNetSnapshot?.({
+                    t,
+                    seq,
+                    ...gs,
+                });
+            }
+        };
+        this.socket.on("GhostState", this._onGhostState);
+
+        // Power dot eaten by ANY client should trigger frightened for EVERYONE.
+        this._onPowerDotEaten = (msg) => {
+            if (!msg) return;
+            // Avoid re-triggering from our own broadcast (we already do it locally)
+            if (msg.socketId && msg.socketId === this.currentPlayer.socketId) return;
+            this.triggerFrightened();
+        };
+        this.socket.on("PowerDotEaten", this._onPowerDotEaten);
+
+        // Ask the server who the current ghost host is (so we don't miss the initial broadcast).
+        this.socket.emit("ghost_host:request");
 
         // ---- HUD ----
         this.onHudUpdate?.({
@@ -283,115 +245,202 @@ export default class MainScene extends Phaser.Scene {
             numPlayers: this.numPlayers,
         });
 
+        // ---- PLAYERS ----
+        this.players = [];
+        for (let i = 0; i < this.numPlayers; i++) {
+            const startTile = PACMAN_START_TILES[i] ?? PACMAN_START_TILES[0];
+
+            // Only the local player gets keyboard controls
+            let controls = null;
+            if (this.currentPlayers[i]?.socketId === this.currentPlayer.socketId) {
+                controls = this.input.keyboard.createCursorKeys();
+            }
+
+            const p = new Player(this, {
+                startTile,
+                speed: 145,
+                color: colors[i] ?? 0xffff00,
+                socketId: this.currentPlayers[i]?.socketId,
+                controls,
+            });
+
+            p.graphics.setDepth(1001);
+            this.players.push(p);
+        }
+
+        // ---- NETWORKING ----
+        // Key idea:
+        // - Send INPUT immediately (keydown) so intent is shared quickly.
+        // - Send STATE at ~20hz (50ms) so remote clients can interpolate smoothly.
+        this.inputSeq = 0;
+        this.stateSeq = 0;
+
+        this._onKeyDown = (event) => {
+            const code = event.code;
+            const isArrow =
+                code === "ArrowUp" || code === "ArrowDown" || code === "ArrowLeft" || code === "ArrowRight";
+            if (!isArrow) return;
+
+            this.socket.emit("KeyPressed", {
+                socketId: this.currentPlayer.socketId,
+                dir: code,
+                seq: ++this.inputSeq,
+            });
+        };
+
+        this.input.keyboard.on("keydown", this._onKeyDown);
+
+        this._onKeyPressed = ({ socketId, dir, seq }) => {
+            if (socketId === this.currentPlayer.socketId) return;
+
+            const p = this.players.find((pl) => pl.socketId === socketId);
+            if (!p) return;
+
+            p.lastInputSeq = p.lastInputSeq ?? 0;
+            if (seq != null && seq <= p.lastInputSeq) return;
+            if (seq != null) p.lastInputSeq = seq;
+
+            p.setNextDirection(dir); // ArrowUp etc
+        };
+        this.socket.on("KeyPressed", this._onKeyPressed);
+
+        // State tick: send our *pixel* position too, so remote doesn't "teleport tile centers".
+        this.netTick = this.time.addEvent({
+            delay: 50,
+            loop: true,
+            callback: () => {
+                const local = this.getLocalPlayer();
+                if (!local) return;
+
+                this.socket.emit("PlayerState", {
+                    socketId: this.currentPlayer.socketId,
+                    x: local.sprite.x,
+                    y: local.sprite.y,
+                    tileX: local.tileX,
+                    tileY: local.tileY,
+                    dir: local.direction,
+                    nextDir: local.nextDirection,
+                    seq: ++this.stateSeq,
+                });
+            },
+        });
+
+        this._onPlayerState = (state) => {
+            const { socketId, x, y, tileX, tileY, dir, nextDir, seq } = state ?? {};
+            if (!socketId || socketId === this.currentPlayer.socketId) return;
+
+            const p = this.players.find((pl) => pl.socketId === socketId);
+            if (!p) return;
+
+            p.lastStateSeq = p.lastStateSeq ?? 0;
+            if (seq != null && seq <= p.lastStateSeq) return;
+            if (seq != null) p.lastStateSeq = seq;
+
+            p.pushNetSnapshot?.({ x, y, tileX, tileY, dir, nextDir });
+        };
+        this.socket.on("PlayerState", this._onPlayerState);
+
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+            this.input.keyboard.off("keydown", this._onKeyDown);
+            this.socket.off("KeyPressed", this._onKeyPressed);
+            this.socket.off("PlayerState", this._onPlayerState);
+            this.netTick?.remove?.();
+            this.ghostNetTick?.remove?.();
+            this.socket.off("ghost_host", this._onGhostHost);
+            this.socket.off("GhostState", this._onGhostState);
+            this.socket.off("PowerDotEaten", this._onPowerDotEaten);
+        });
+
+        // ---- READY OVERLAY ----
+        this.readyOverlay = this.add
+            .rectangle(
+                (this.levelCols * TILE_SIZE) / 2,
+                (this.levelRows * TILE_SIZE) / 2,
+                this.levelCols * TILE_SIZE,
+                60,
+                0x000000,
+                0.8
+            )
+            .setDepth(2000)
+            .setVisible(false);
+
+        this.readyText = this.add
+            .text((this.levelCols * TILE_SIZE) / 2, (this.levelRows * TILE_SIZE) / 2, "READY!", {
+                fontSize: "32px",
+                fontFamily: "Arial",
+                color: "#ffff00",
+            })
+            .setOrigin(0.5)
+            .setDepth(2001)
+            .setVisible(false);
+
+        this.lastEatTime = 0;
         this.startRound();
     }
 
-    /* ===============================
-       HELPERS
-    =============================== */
+    update(time, delta) {
+        if (!this.isRoundActive || this.isDying) {
+            this.stopEatSound();
+            for (const p of this.players) p.render(false);
+            return;
+        }
 
-    getLocalPlayer() {
-        return this.players.find((p) => p.socketId === this.currentPlayer.socketId) ?? this.players[0];
-    }
+        // ---- PLAYERS ----
+        let anyMoved = false;
+        const movedFlags = new Array(this.players.length).fill(false);
 
-    isWallTile(tile) {
-        return WALL_TILES.includes(tile);
-    }
+        for (let i = 0; i < this.players.length; i++) {
+            const moved = this.players[i].update(delta);
+            movedFlags[i] = moved;
+            if (moved) anyMoved = true;
+        }
 
-    isGhostHouseTile(x, y) {
-        return level1?.[y]?.[x] === "X";
-    }
+        // Eating audio: play while anyone is moving AND has recently eaten
+        if (anyMoved && this.time.now - this.lastEatTime < 600) {
+            this.playEatSound();
+        } else {
+            this.stopEatSound();
+        }
 
-    _buildGhostHouseInfo() {
-        // Door tiles are the '~' tiles
-        const doorTiles = [];
-        let minHouseY = Infinity;
-        let maxHouseY = -Infinity;
+        // ---- GHOSTS ----
+        if (this.isGhostHost) {
+            this.updateGhostMode(delta);
 
-        for (let y = 0; y < this.levelRows; y++) {
-            for (let x = 0; x < this.levelCols; x++) {
-                const t = level1[y][x];
-                if (t === "~") doorTiles.push({ x, y });
-                if (t === "X") {
-                    minHouseY = Math.min(minHouseY, y);
-                    maxHouseY = Math.max(maxHouseY, y);
-                }
+            for (const g of this.ghosts) {
+                g.setMode?.(this.ghostMode);
+
+                const targetPlayer = this.getNearestPlayerForGhost(g);
+                const pacTile = targetPlayer.getTile();
+                const pacDir = targetPlayer.getDirection?.();
+
+                g.update?.(delta, pacTile, pacDir);
+            }
+        } else {
+            // Non-host: ghosts are net-controlled (Ghost.js interpolates snapshots in update()).
+            for (const g of this.ghosts) {
+                g.update?.(delta);
             }
         }
 
-        // Exit tile: just above the left door tile (works with your map)
-        // Doors are at (13,12) and (14,12) in your level. :contentReference[oaicite:2]{index=2}
-        const leftDoor = doorTiles.slice().sort((a, b) => a.x - b.x)[0];
-        const exitTile = leftDoor ? { x: leftDoor.x, y: leftDoor.y - 1 } : null;
-
-        return {
-            doorTiles,
-            exitTile,
-            inHouseMinY: minHouseY === Infinity ? null : minHouseY,
-            inHouseMaxY: maxHouseY === -Infinity ? null : maxHouseY,
-        };
-    }
-
-
-    // Ghost-specific passability rules.
-    // Ghost.js calls this as: isGhostPassable(fromX, fromY, toX, toY)
-    // - Wraps horizontally (tunnel)
-    // - Blocks solid walls
-    // - Gate tile(s) (~ or ~~): ghosts may EXIT but not ENTER
-    isGhostPassable(fromX, fromY, toX, toY) {
-        const cols = this.levelCols;
-        const rows = this.levelRows;
-
-        // vertical bounds are hard walls
-        if (toY < 0 || toY >= rows) return false;
-
-        // horizontal wrap (tunnel)
-        if (toX < 0) toX = cols - 1;
-        if (toX >= cols) toX = 0;
-
-        const tile = level1[toY]?.[toX];
-        if (!tile) return false;
-
-        // solid wall tiles
-        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
-        if (walls.includes(tile)) return false;
-
-        // ghost-house gate: allow exit (moving UP out of the house), block entry
-        if (tile === "~~" || tile === "~") {
-            return fromY > toY;
+        // ---- COLLISION ----
+        const hit = this.checkGhostCollision();
+        if (hit) {
+            if (hit.ghost.isFrightened?.()) this.eatGhost(hit.ghost);
+            else {
+                this.killPacmen();
+                for (const p of this.players) p.render(false);
+                return;
+            }
         }
 
-        return true;
-    }
-
-    isPacmanPassable(toX, toY) {
-        const rows = level1.length;
-        const cols = level1[0].length;
-
-        if (toY < 0 || toY >= rows) return false;
-        if (toX < 0) toX = cols - 1;
-        if (toX >= cols) toX = 0;
-
-        const tile = level1[toY]?.[toX];
-        if (!tile) return false;
-
-        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
-
-        if (walls.includes(tile)) return false;
-        // Pac-Men cannot pass the ghost-house gate tiles
-        if (tile === "~~" || tile === "~") return false;
-
-        return true;
-    }
-
-    canMove(tileX, tileY, direction) {
-        const newX = tileX + direction.x;
-        const newY = tileY + direction.y;
-        return this.isPacmanPassable(newX, newY);
+        // ---- VISUALS ----
+        for (let i = 0; i < this.players.length; i++) {
+            this.players[i].render(movedFlags[i]);
+        }
     }
 
     /* ===============================
-       DOTS / SCORE (FAST)
+       DOTS
     =============================== */
 
     _dotKey(x, y) {
@@ -413,16 +462,20 @@ export default class MainScene extends Phaser.Scene {
                         tile === "o" ? TILE_SIZE * 0.22 : TILE_SIZE * 0.1,
                         0xffffff
                     );
-                    dot.setData("type", tile === "o" ? "power" : "normal");
-                    dot.setData("tileX", x);
-                    dot.setData("tileY", y);
 
-                    this.dots.add(dot);
+                    dot.setData("type", tile === "o" ? "power" : "normal");
                     this.dotMap.set(this._dotKey(x, y), dot);
                     this.dotsRemaining++;
+
+                    this.dots.add(dot);
                 }
             }
         }
+    }
+
+    // Backwards-compatible name (you asked for drawDots; your project calls it buildDotsFromLevel)
+    drawDots() {
+        this.buildDotsFromLevel();
     }
 
     collectDotAt(player) {
@@ -463,7 +516,13 @@ export default class MainScene extends Phaser.Scene {
             numPlayers: this.numPlayers,
         });
 
-        if (type === "power") this.triggerFrightened();
+        if (type === "power") {
+            // Only the local player announces power dots so we don't spam the server.
+            if (player.socketId === this.currentPlayer.socketId) {
+                this.socket.emit("PowerDotEaten", { tileX: x, tileY: y });
+            }
+            this.triggerFrightened();
+        }
         if (this.dotsRemaining <= 0) this.endRound();
 
         return true;
@@ -481,7 +540,7 @@ export default class MainScene extends Phaser.Scene {
 
         this.roundStartSound?.play();
 
-        // Reset all players to start tiles (keep dots as-is on death; round start keeps current map dots too)
+        // Reset all players to start tiles (keep dots as-is on death; round start keeps current map)
         for (let i = 0; i < this.players.length; i++) {
             this.players[i].reset(PACMAN_START_TILES[i] ?? PACMAN_START_TILES[0]);
         }
@@ -539,13 +598,143 @@ export default class MainScene extends Phaser.Scene {
     }
 
     /* ===============================
-       AUDIO
+       HELPERS
     =============================== */
 
+    getLocalPlayer() {
+        return this.players.find((p) => p.socketId === this.currentPlayer.socketId) ?? this.players[0];
+    }
+
+    isWallTile(tile) {
+        return WALL_TILES.includes(tile);
+    }
+
+    isGhostHouseTile(x, y) {
+        // Your level uses X for the ghost house interior (based on your earlier note)
+        const tile = level1?.[y]?.[x];
+        return tile === "X";
+    }
+
+    // Allow ghosts through the "~" gate, but (generally) not Pac-Man.
+    isGhostPassable(fromX, fromY, toX, toY) {
+        const tile = level1?.[toY]?.[toX];
+        if (tile == null) return false;
+
+        // Wrap horizontally
+        if (toX < 0 || toX >= this.levelCols) return true;
+
+        // Walls are blocked
+        if (this.isWallTile(tile)) return false;
+
+        // "~" is the gate. Ghosts can pass.
+        if (tile === "~~" || tile === "~") {
+            // Allow ghosts to step ONTO the gate from inside the house (from X tiles),
+            // so they can approach it from the side and still exit.
+            const fromInsideHouse = this.isGhostHouseTile(fromX, fromY);
+
+            // Also allow the classic "exit upward" behavior.
+            const exitingUpward = fromY > toY;
+
+            // But still block entry from outside (sideways or downward into the gate).
+            return fromInsideHouse || exitingUpward;
+        }
+
+
+        // Everything else passable
+        return true;
+    }
+
+    canMove(x, y, dir) {
+        const nx = (x + dir.x + this.levelCols) % this.levelCols;
+        const ny = y + dir.y;
+        if (ny < 0 || ny >= this.levelRows) return false;
+
+        const tile = level1[ny][nx];
+        if (tile == null) return false;
+
+        if (this.isWallTile(tile)) return false;
+
+        // block gate for pac-men
+        if (tile === "~") return false;
+
+        return true;
+    }
+
+    // Find nearest player (tile distance) as the ghost target "pacman"
+    getNearestPlayerForGhost(ghost) {
+        let best = this.players[0];
+        let bestD = Infinity;
+
+        for (const p of this.players) {
+            const dx = p.tileX - ghost.tileX;
+            const dy = p.tileY - ghost.tileY;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) {
+                bestD = d;
+                best = p;
+            }
+        }
+
+        return best;
+    }
+
+    _buildGhostHouseInfo() {
+        // Door tiles are "~". Exit tile is the tile directly above the first door tile.
+        const doorTiles = [];
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        for (let y = 0; y < this.levelRows; y++) {
+            for (let x = 0; x < this.levelCols; x++) {
+                if (this.isGhostHouseTile(x, y)) {
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                }
+                if (level1[y][x] === "~" || level1[y][x] === "~~") {
+                    doorTiles.push({ x, y });
+                }
+            }
+        }
+
+        let exitTile = null;
+
+        if (doorTiles.length > 0) {
+            // Pick a door tile that actually has a passable tile above it for ghosts.
+            for (const d of doorTiles) {
+                const aboveY = d.y - 1;
+                if (aboveY < 0) continue;
+
+                if (this.isGhostPassable(d.x, d.y, d.x, aboveY)) {
+                    exitTile = { x: d.x, y: aboveY };
+                    break;
+                }
+            }
+
+            // Fallback: old behavior if none detected
+            if (!exitTile) {
+                const d = doorTiles[0];
+                exitTile = { x: d.x, y: d.y - 1 };
+            }
+        }
+
+        return {
+            doorTiles,
+            exitTile,
+            inHouseMinY: Number.isFinite(minY) ? minY : null,
+            inHouseMaxY: Number.isFinite(maxY) ? maxY : null,
+        };
+    }
+
+    /* ===============================
+       SOUND
+    =============================== */
+
+    playEatSound() {
+        if (!this.eatSound?.isPlaying) this.eatSound?.play();
+    }
+
     stopEatSound() {
-        if (!this.eatSound) return;
-        if (this.eatSound.isPlaying) this.eatSound.stop();
-        if (this.eatSound.isPaused) this.eatSound.stop();
+        if (this.eatSound?.isPlaying) this.eatSound?.stop();
     }
 
     /* ===============================
@@ -564,20 +753,35 @@ export default class MainScene extends Phaser.Scene {
             const py = p.sprite.y;
 
             for (const g of this.ghosts) {
-                if (!g?.sprite) continue;
-                const dx = g.sprite.x - px;
-                const dy = g.sprite.y - py;
+                const dx = px - g.x;
+                const dy = py - g.y;
                 const d2 = dx * dx + dy * dy;
-                if (d2 < hit) return { ghost: g, player: p };
+
+                if (d2 <= hit) {
+                    return { player: p, ghost: g };
+                }
             }
         }
 
         return null;
     }
 
-    eatGhost(ghost) {
-        if (!ghost) return;
+    killPacmen() {
+        if (this.isDying) return;
 
+        this.isDying = true;
+        this.isRoundActive = false;
+
+        this.stopEatSound();
+        this.deadSound?.play();
+
+        this.time.delayedCall(1300, () => {
+            this.isDying = false;
+            this.startRound();
+        });
+    }
+
+    eatGhost(ghost) {
         this.score += 200;
         this.registry.set("score", this.score);
         this.onHudUpdate?.({
@@ -591,99 +795,7 @@ export default class MainScene extends Phaser.Scene {
         ghost.onEaten?.();
     }
 
-    killPacmen() {
-        if (this.isDying) return;
-        this.isDying = true;
-
-        this.stopEatSound();
-        this.deadSound?.play();
-
-        this.time.delayedCall(900, () => {
-            this.isDying = false;
-            // Reset players + ghosts only. Dots persist.
-            this.startRound();
-        });
-    }
-
-    getNearestPlayerForGhost(ghost) {
-        let best = null;
-        let bestD2 = Infinity;
-
-        for (const p of this.players) {
-            if (!p?.sprite) continue;
-            const dx = p.sprite.x - ghost.sprite.x;
-            const dy = p.sprite.y - ghost.sprite.y;
-            const d2 = dx * dx + dy * dy;
-            if (d2 < bestD2) {
-                bestD2 = d2;
-                best = p;
-            }
-        }
-
-        return best ?? this.players[0];
-    }
-
-    /* ===============================
-       UPDATE
-    =============================== */
-
-    update(time, delta) {
-        if (!this.isRoundActive || this.isDying) {
-            this.stopEatSound();
-            for (const p of this.players) p.render(false);
-            return;
-        }
-
-        // ---- PLAYERS ----
-        let anyMoved = false;
-        const movedFlags = new Array(this.players.length).fill(false);
-
-        for (let i = 0; i < this.players.length; i++) {
-            const moved = this.players[i].update(delta);
-            movedFlags[i] = moved;
-            if (moved) anyMoved = true;
-        }
-
-        // ---- EAT SOUND RULE: only when ANY player is moving + recently ate ----
-        const eatingRecently = this.time.now - this.lastEatTime < 140;
-        if (anyMoved && eatingRecently) {
-            if (this.eatSound.isPaused) this.eatSound.resume();
-            else if (!this.eatSound.isPlaying) this.eatSound.play();
-        } else {
-            this.stopEatSound();
-        }
-
-        // ---- GHOSTS ----
-        this.updateGhostMode(delta);
-
-        for (const g of this.ghosts) {
-            g.setMode?.(this.ghostMode);
-
-            const targetPlayer = this.getNearestPlayerForGhost(g);
-            const pacTile = targetPlayer.getTile();
-            const pacDir = targetPlayer.getDirection?.();
-
-            g.update?.(delta, pacTile, pacDir);
-        }
-
-        // ---- COLLISION ----
-        const hit = this.checkGhostCollision();
-        if (hit) {
-            if (hit.ghost.isFrightened?.()) this.eatGhost(hit.ghost);
-            else {
-                this.killPacmen();
-                for (const p of this.players) p.render(false);
-                return;
-            }
-        }
-
-        // ---- VISUALS ----
-        for (let i = 0; i < this.players.length; i++) {
-            this.players[i].render(movedFlags[i]);
-        }
-    }
-
-    drawLevel() {
+drawLevel() {
         const graphics = this.add.graphics();
         const TILE = TILE_SIZE;
 

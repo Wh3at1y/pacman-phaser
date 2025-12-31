@@ -26,7 +26,7 @@ export default class Ghost {
         this.baseColor = opts.color;
         this.color = opts.color;
 
-        this.baseSpeed = opts.speed
+        this.baseSpeed = opts.speed;
         this.speed = opts.speed ?? 140;
         this.scatterTarget = opts.scatterTarget ?? { x: 1, y: 1 };
 
@@ -48,6 +48,13 @@ export default class Ghost {
         // Modes
         this.mode = "scatter"; // "scatter" | "chase"
         this.frightenedUntil = 0;
+
+        // ---- Net-controlled mode (one client simulates, others interpolate) ----
+        this.isNetControlled = false;
+        this.serverFrightened = false;
+        this.netSnapshots = []; // [{t, x, y, tileX, tileY, dir, mode, frightened, seq}]
+        this.netInterpDelayMs = 110;
+        this._lastNetSeq = 0;
 
         // Ghost-house state machine
         // "inHouse" -> waits/bounces inside box
@@ -78,6 +85,73 @@ export default class Ghost {
         this.sprite?.destroy();
     }
 
+    // ---- Networking helpers ----
+    setNetControlled(on = true) {
+        this.isNetControlled = !!on;
+        this.netSnapshots.length = 0;
+        this._lastNetSeq = 0;
+        this.serverFrightened = false;
+    }
+
+    pushNetSnapshot(s) {
+        if (!s || typeof s !== "object") return;
+
+        // Drop out-of-order packets (payload.seq is global, but good enough)
+        const seq = typeof s.seq === "number" ? s.seq : 0;
+        if (seq && seq <= this._lastNetSeq) return;
+        if (seq) this._lastNetSeq = seq;
+
+        this.netSnapshots.push(s);
+        if (this.netSnapshots.length > 12) this.netSnapshots.shift();
+    }
+
+    _applyNetInterpolation() {
+        const now = this.scene.time.now;
+        const renderTime = now - this.netInterpDelayMs;
+
+        const snaps = this.netSnapshots;
+        if (snaps.length === 0) return false;
+
+        // Drop snapshots that are too old
+        while (snaps.length >= 3 && snaps[1].t <= renderTime) snaps.shift();
+
+        // If we only have one, smooth-ish snap
+        if (snaps.length === 1) {
+            const s = snaps[0];
+            const a = 1 - Math.pow(0.001, 1 / 60); // ~0.11 per frame-ish
+            if (typeof s.x === "number") this.x += (s.x - this.x) * a;
+            if (typeof s.y === "number") this.y += (s.y - this.y) * a;
+            if (typeof s.tileX === "number") this.tileX = s.tileX;
+            if (typeof s.tileY === "number") this.tileY = s.tileY;
+            if (s.dir) this.dir = s.dir;
+            if (s.mode) this.mode = s.mode;
+            if (typeof s.frightened === "boolean") this.serverFrightened = s.frightened;
+            return true;
+        }
+
+        const s0 = snaps[0];
+        const s1 = snaps[1];
+
+        const span = Math.max(1, s1.t - s0.t);
+        const alpha = Phaser.Math.Clamp((renderTime - s0.t) / span, 0, 1);
+
+        if (typeof s0.x === "number" && typeof s1.x === "number") {
+            this.x = Phaser.Math.Linear(s0.x, s1.x, alpha);
+        }
+        if (typeof s0.y === "number" && typeof s1.y === "number") {
+            this.y = Phaser.Math.Linear(s0.y, s1.y, alpha);
+        }
+
+        const use = alpha < 0.5 ? s0 : s1;
+        if (typeof use.tileX === "number") this.tileX = use.tileX;
+        if (typeof use.tileY === "number") this.tileY = use.tileY;
+        if (use.dir) this.dir = use.dir;
+        if (use.mode) this.mode = use.mode;
+        if (typeof use.frightened === "boolean") this.serverFrightened = use.frightened;
+
+        return true;
+    }
+
     configureHouse(cfg) {
         // called by MainScene after scanning level
         this.house.enabled = true;
@@ -100,6 +174,7 @@ export default class Ghost {
         this.dir = { x: 1, y: 0 };
 
         this.frightenedUntil = 0;
+        this.serverFrightened = false;
         this.setColor(this.baseColor);
 
         this.sprite?.setPosition(this.x, this.y);
@@ -130,6 +205,12 @@ export default class Ghost {
     }
 
     isFrightened() {
+        // In net-controlled mode, use either the authoritative flag OR local timer
+        // (local timer gives instant feedback on power dots even before snapshots arrive).
+        if (this.isNetControlled) {
+            const local = this.scene.time.now < this.frightenedUntil;
+            return local || !!this.serverFrightened;
+        }
         return this.scene.time.now < this.frightenedUntil;
     }
 
@@ -415,7 +496,7 @@ export default class Ghost {
                 if (this.tileX === door.x && this.tileY === door.y) {
                     this.dir = { x: 0, y: -1 };
                 } else {
-                    // Go to the door tile (allow reverse so it doesn't dumbly ping-pong)
+                    // Go to the door tile (allow reverse so it doesn't ping-pong)
                     this.dir = this.chooseDirToward(door, true);
                 }
 
@@ -515,13 +596,19 @@ export default class Ghost {
         this.sprite.fillStyle(pupilColor, 1);
         this.sprite.fillCircle(-eyeOffsetX + lookX, eyeOffsetY + lookY, pupilR);
         this.sprite.fillCircle(eyeOffsetX + lookX, eyeOffsetY + lookY, pupilR);
-
-        // Optional: frightened mouth (simple zigzag) if you want
-        // if (this.isFrightened?.()) { ... }
     }
 
-
     update(delta, pacTile, pacDir) {
+        // If we’re not the ghost-host client, we don’t run AI.
+        // We just interpolate snapshots and draw.
+        if (this.isNetControlled) {
+            this.resetColorIfNeeded();
+            this._applyNetInterpolation();
+            this.sprite.setPosition(this.x, this.y);
+            this._drawGhost();
+            return;
+        }
+
         this.resetColorIfNeeded();
 
         const TS = this.scene.TILE_SIZE;
@@ -570,6 +657,5 @@ export default class Ghost {
 
         this.sprite.setPosition(this.x, this.y);
         this._drawGhost();
-
     }
 }

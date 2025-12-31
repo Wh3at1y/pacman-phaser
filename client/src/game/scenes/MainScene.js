@@ -30,7 +30,7 @@ export default class MainScene extends Phaser.Scene {
     }
 
     preload() {
-        this.load.audio("roundStart", "start.mp3");
+        this.load.audio("roundStart", "start.wav");
         this.load.audio("eatLoop", "eating.mp3");
         this.load.audio("dead", "dead.mp3");
     }
@@ -40,6 +40,7 @@ export default class MainScene extends Phaser.Scene {
         this.levelCols = level1[0].length;
         this.levelRows = level1.length;
 
+        this.level = level1;
         this.cameras.main.setZoom(1);
 
         // ---- GAME STATE ----
@@ -72,8 +73,8 @@ export default class MainScene extends Phaser.Scene {
         this.frightenedMs = 7000;
 
         // ---- AUDIO ----
-        this.roundStartSound = this.sound.add("roundStart", { volume: 0 });
-        this.eatSound = this.sound.add("eatLoop", { loop: true, volume: 0.45 });
+        this.roundStartSound = this.sound.add("roundStart", { volume: 0.1 });
+        this.eatSound = this.sound.add("eatLoop", { loop: true, volume: 0.1 });
         this.deadSound = this.sound.add("dead", { volume: 0.7 });
         this.lastEatTime = -999999;
 
@@ -228,7 +229,7 @@ export default class MainScene extends Phaser.Scene {
             new Ghost(this, {
                 name: "blinky",
                 color: 0xff0000,
-                startTile: { x: 13, y: 13 },
+                startTile: { x: 14, y: 11 },
                 scatterTarget: { x: this.levelCols - 2, y: 1 },
                 speed: 145,
             }),
@@ -255,11 +256,11 @@ export default class MainScene extends Phaser.Scene {
             }),
         ];
 
-        // ---- GHOST HOUSE SETUP (release schedule) ----
-        const houseInfo = this._buildGhostHouseInfo();
+        // ---- GHOST HOUSE CONFIG ----
+        const houseInfo = this.buildGhostHouseInfo();
 
         const releaseByName = {
-            blinky: 1000,
+            blinky: 0,
             pinky: 1500,
             inky: 4500,
             clyde: 7500,
@@ -270,9 +271,8 @@ export default class MainScene extends Phaser.Scene {
                 ...houseInfo,
                 releaseDelayMs: releaseByName[g.name] ?? 0,
             });
+            g.reset?.(); // important: initializes inHouse state based on X tiles
         }
-
-
 
         // ---- HUD ----
         this.onHudUpdate?.({
@@ -294,42 +294,48 @@ export default class MainScene extends Phaser.Scene {
         return this.players.find((p) => p.socketId === this.currentPlayer.socketId) ?? this.players[0];
     }
 
-    isWallTile(tile) {
-        return WALL_TILES.includes(tile);
+
+    getTileAt(x, y) {
+        const rows = this.levelRows;
+        const cols = this.levelCols;
+
+        if (y < 0 || y >= rows) return null;
+
+        // horizontal wrap (tunnel)
+        if (x < 0) x = cols - 1;
+        if (x >= cols) x = 0;
+
+        return this.level?.[y]?.[x] ?? null;
     }
 
-    isGhostHouseTile(x, y) {
-        return level1?.[y]?.[x] === "X";
-    }
-
-    _buildGhostHouseInfo() {
-        // Door tiles are the '~' tiles
+    buildGhostHouseInfo() {
         const doorTiles = [];
-        let minHouseY = Infinity;
-        let maxHouseY = -Infinity;
+        const xTiles = [];
 
         for (let y = 0; y < this.levelRows; y++) {
             for (let x = 0; x < this.levelCols; x++) {
-                const t = level1[y][x];
-                if (t === "~") doorTiles.push({ x, y });
-                if (t === "X") {
-                    minHouseY = Math.min(minHouseY, y);
-                    maxHouseY = Math.max(maxHouseY, y);
-                }
+                const t = this.level?.[y]?.[x];
+                if (t === "~" || t === "~~") doorTiles.push({ x, y });
+                if (t === "X") xTiles.push({ x, y });
             }
         }
 
-        // Exit tile: just above the left door tile (works with your map)
-        // Doors are at (13,12) and (14,12) in your level. :contentReference[oaicite:2]{index=2}
-        const leftDoor = doorTiles.slice().sort((a, b) => a.x - b.x)[0];
-        const exitTile = leftDoor ? { x: leftDoor.x, y: leftDoor.y - 1 } : null;
+        // Determine inside-house vertical bounds (used for bounce)
+        let inHouseMinY = null;
+        let inHouseMaxY = null;
+        for (const p of xTiles) {
+            if (inHouseMinY === null || p.y < inHouseMinY) inHouseMinY = p.y;
+            if (inHouseMaxY === null || p.y > inHouseMaxY) inHouseMaxY = p.y;
+        }
 
-        return {
-            doorTiles,
-            exitTile,
-            inHouseMinY: minHouseY === Infinity ? null : minHouseY,
-            inHouseMaxY: maxHouseY === -Infinity ? null : maxHouseY,
-        };
+        // Exit tile: the tile directly above the top-most door tile (works with your layout)
+        let exitTile = null;
+        if (doorTiles.length) {
+            const topDoor = doorTiles.reduce((a, b) => (b.y < a.y ? b : a), doorTiles[0]);
+            exitTile = { x: topDoor.x, y: topDoor.y - 1 };
+        }
+
+        return { doorTiles, exitTile, inHouseMinY, inHouseMaxY };
     }
 
 
@@ -349,7 +355,7 @@ export default class MainScene extends Phaser.Scene {
         if (toX < 0) toX = cols - 1;
         if (toX >= cols) toX = 0;
 
-        const tile = level1[toY]?.[toX];
+        const tile = this.getTileAt(toX, toY);
         if (!tile) return false;
 
         // solid wall tiles
@@ -372,7 +378,7 @@ export default class MainScene extends Phaser.Scene {
         if (toX < 0) toX = cols - 1;
         if (toX >= cols) toX = 0;
 
-        const tile = level1[toY]?.[toX];
+        const tile = this.getTileAt(toX, toY);
         if (!tile) return false;
 
         const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
@@ -521,8 +527,18 @@ export default class MainScene extends Phaser.Scene {
 
     triggerFrightened() {
         this.frightenedUntil = this.time.now + this.frightenedMs;
-        for (const g of this.ghosts) g.setFrightened?.(this.frightenedMs);
+
+        for (const g of this.ghosts) {
+            // Make sure tileX/tileY are current before checking location
+            g._syncTileFromPixels?.();
+
+            // ONE source of truth: ghost decides if it can be frightened
+            if (!g.canBeFrightened?.()) continue;
+
+            g.onEnergizer?.(this.frightenedMs);
+        }
     }
+
 
     updateGhostMode(delta) {
         if (this.time.now < this.frightenedUntil) return;
@@ -565,6 +581,10 @@ export default class MainScene extends Phaser.Scene {
 
             for (const g of this.ghosts) {
                 if (!g?.sprite) continue;
+                // Ghosts that are in the house (or leaving) should not collide with Pac-Man.
+                if (g.state && g.state !== "active") continue;
+                // Prevent immediate re-hit on the same frame / same tile
+                if (g.noCollideUntil && this.time.now < g.noCollideUntil) continue;
                 const dx = g.sprite.x - px;
                 const dy = g.sprite.y - py;
                 const d2 = dx * dx + dy * dy;
@@ -669,8 +689,9 @@ export default class MainScene extends Phaser.Scene {
         // ---- COLLISION ----
         const hit = this.checkGhostCollision();
         if (hit) {
-            if (hit.ghost.isFrightened?.()) this.eatGhost(hit.ghost);
-            else {
+            if (hit.ghost.isFrightened?.()) {
+                this.eatGhost(hit.ghost);
+            } else {
                 this.killPacmen();
                 for (const p of this.players) p.render(false);
                 return;

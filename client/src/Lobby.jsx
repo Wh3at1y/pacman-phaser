@@ -30,7 +30,7 @@ export default function Lobby() {
         socket.on("connect", onConnect);
         socket.on("joined", onJoined);
         socket.on("startGame", startGame);
-        socket.on("kicked", (playerId) => alert("kicked"))
+        socket.on("kicked", () => socket.disconnect());
 
         return () => {
             socket.off("connect", onConnect);
@@ -47,8 +47,8 @@ export default function Lobby() {
         socket.emit("hostStart");
     }
 
-    const kickPlayer = (playerId) => {
-        socket.emit("KickPlayer", playerId)
+    const kickPlayer = (player) => {
+        socket.emit("KickPlayer", player.socketId)
     }
 
     const currentPlayer = players.find(player => player.socketId === socket.id) || null
@@ -90,7 +90,7 @@ export default function Lobby() {
                             <div className="playerRow__right">
                                 {player.ready ? <span className="playerTag playerTag--ready">Ready</span> :  <span className="playerTag playerTag--notReady">Not Ready</span>}
                             </div>
-                            <div style={{cursor:'pointer'}} onClick={() => kickPlayer(player.playerId)}>{player.lobbyLeader && "X"}</div>
+                            <div style={{cursor:'pointer'}} onClick={() => kickPlayer(player)}>{currentPlayer.lobbyLeader && "X"}</div>
                         </li>))}
                     </ul>
                 </section>

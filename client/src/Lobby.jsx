@@ -3,6 +3,7 @@ import './lobby.css'
 import RunGame from "./RunGame.jsx";
 
 import socket from "./socket";
+import Chat from "./components/Chat.js";
 
 
 
@@ -113,7 +114,9 @@ export default function Lobby() {
                     </div>
 
                     <div className="actions">
-                        {currentPlayer.ready ? <button className="btn btn--primary" type="button" onClick={onReady}>Un-Ready</button> : <button className="btn btn--primary" type="button" onClick={onReady}>Ready Up</button>}
+                        {currentPlayer.ready ?
+                            <button className="btn btn--primary" type="button" onClick={onReady}>Un-Ready</button> :
+                            <button className="btn btn--primary" type="button" onClick={onReady}>Ready Up</button>}
                         <button className="btn btn--ghost" type="button">PAC-MEN</button>
                         <button className="btn btn--ghost" type="button" onClick={handleStart}>Start Game</button>
 
@@ -121,6 +124,7 @@ export default function Lobby() {
                             <p className="hint__title">Tip</p>
                             <p className="hint__text">You don't need bubble wrap to know when it's chowder time.</p>
                         </div>
+                        <Chat />
                     </div>
                 </aside>
             </main>

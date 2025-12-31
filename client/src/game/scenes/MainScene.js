@@ -30,7 +30,7 @@ export default class MainScene extends Phaser.Scene {
     }
 
     preload() {
-        this.load.audio("roundStart", "start.mp3");
+        this.load.audio("roundStart", "start.wav");
         this.load.audio("eatLoop", "eating.mp3");
         this.load.audio("dead", "dead.mp3");
     }
@@ -72,9 +72,9 @@ export default class MainScene extends Phaser.Scene {
         this.frightenedMs = 7000;
 
         // ---- AUDIO ----
-        this.roundStartSound = this.sound.add("roundStart", { volume: 0 });
-        this.eatSound = this.sound.add("eatLoop", { loop: true, volume: 0.45 });
-        this.deadSound = this.sound.add("dead", { volume: 0.7 });
+        this.roundStartSound = this.sound.add("roundStart", { volume: 0.1 });
+        this.eatSound = this.sound.add("eatLoop", { loop: true, volume: 0.1 });
+        this.deadSound = this.sound.add("dead", { volume: 0.1 });
         this.lastEatTime = -999999;
 
         // ---- PLAYERS ----

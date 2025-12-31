@@ -26,6 +26,7 @@ export default class Ghost {
         this.baseColor = opts.color;
         this.color = opts.color;
 
+        this.baseSpeed = opts.speed
         this.speed = opts.speed ?? 140;
         this.scatterTarget = opts.scatterTarget ?? { x: 1, y: 1 };
 
@@ -528,7 +529,8 @@ export default class Ghost {
         // Decide special house state first (may set dir + tile steps)
         this._updateHouseState(delta);
 
-        let remaining = (this.speed * delta) / 1000;
+        const curSpeed = this.isFrightened() ? (this.baseSpeed * 0.6) : this.baseSpeed;
+        let remaining = (curSpeed * delta) / 1000;
         const maxStep = TS / 4;
 
         while (remaining > 0) {

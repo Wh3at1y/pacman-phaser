@@ -9,7 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Render provides PORT. Default locally if needed.
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 5177;
 
 // If you split frontend/backend later, set CLIENT_ORIGIN to your frontend URL.
 // If serving React from this same server, you can keep origin:true.

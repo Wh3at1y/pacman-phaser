@@ -9,8 +9,7 @@ let io;
 // ----- Lobby state -----
 const playerNames = ["ButterBall", "Chowder", "BubbleWrap", "OrbitGum"];
 
-
-const currentGame = {
+const staticGame = {
     players: new Map(),
     round: 1,
     scores: new Map(),
@@ -18,6 +17,8 @@ const currentGame = {
     deaths: new Map(),
     dotsRemaining: 244
 }
+
+let currentGame = {...staticGame}
 
 export function initSocketServer(server) {
     io = new Server(server, {
@@ -74,6 +75,7 @@ export function initSocketServer(server) {
                 currentGame.lives.set(playerId, 3);
                 currentGame.deaths.set(playerId, 0);
             }
+            currentGame = staticGame
 
             // Wait for everyone to join, 2 seconds
             await waitASec(2000)

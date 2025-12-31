@@ -24,22 +24,23 @@ export default function PacmanGame({players, currentPlayer, backToLobby}) {
 
     useEffect(() => {
         if (!containerRef.current) return;
-        if (gameRef.current) return;
 
-        // Callback Phaser can call whenever HUD changes
-        const onHudUpdate = (partial) => {
-            setHud((prev) => ({...prev, ...partial}));
-        };
+        // Always tear down existing game first
+        if (gameRef.current) {
+            gameRef.current.destroy(true);
+            gameRef.current = null;
+            containerRef.current.innerHTML = "";
+        }
+
+        const onHudUpdate = (partial) => setHud(prev => ({ ...prev, ...partial }));
 
         const config = {
             type: Phaser.AUTO,
             parent: containerRef.current,
-            width: 28 * 24,  // adjust
-            height: 31 * 24, // adjust
+            width: 28 * 24,
+            height: 31 * 24,
             backgroundColor: "#000",
-            physics: {default: "arcade", arcade: {debug: false}},
-
-            // ✅ Pass the callback into the scene instance
+            physics: { default: "arcade", arcade: { debug: false } },
             scene: [new MainScene(onHudUpdate, players, currentPlayer)],
         };
 
@@ -48,12 +49,23 @@ export default function PacmanGame({players, currentPlayer, backToLobby}) {
         return () => {
             gameRef.current?.destroy(true);
             gameRef.current = null;
+            if (containerRef.current) containerRef.current.innerHTML = "";
         };
     }, []);
 
+
     useEffect(() => {
-        if (hud.backToLobby) backToLobby(hud)
-    }, [hud])
+        if (!hud.backToLobby) return;
+
+        // Kill Phaser NOW. Not "eventually when React feels like unmounting."
+        gameRef.current?.destroy(true);
+        gameRef.current = null;
+
+        // Clear the DOM container so Phaser doesn't reuse a dead canvas
+        if (containerRef.current) containerRef.current.innerHTML = "";
+
+        backToLobby(hud);
+    }, [hud.backToLobby])
 
     return (
         <div style={{display: "flex", justifyContent: "center", alignItems: 'center', width: '100vw', height: '100vh'}}>

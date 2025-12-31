@@ -189,6 +189,10 @@ export default class MainScene extends Phaser.Scene {
             this.socket.off("BackToLobby");
             this.socket.off("RoundEnded");
             this.socket.off("LivesUpdate");
+            this.sound.stopAll()
+            this.eatSound.destroy()
+            this.deadSound.destroy()
+            this.roundStartSound.destroy()
             this.netTick?.remove?.();
         });
 
@@ -270,12 +274,14 @@ export default class MainScene extends Phaser.Scene {
 
             // Start next round locally (or just call startRound if that's your pattern)
             this.startRound();
+            if(this.round < round) this.buildDotsFromLevel()
             this.onHudUpdate({round})
         });
 
 
         this._onBackToLobby = () => {
             // stop game loop cleanly
+            this.isRoundActive = false;
             this.isRoundActive = false;
             this.stopEatSound();
 
@@ -576,8 +582,8 @@ export default class MainScene extends Phaser.Scene {
 
         this.readyOverlay.setVisible(true);
         this.readyText.setVisible(true);
-
-        this.roundStartSound?.play();
+        console.log(this.roundStartSound)
+        this.roundStartSound && this.roundStartSound?.play();
 
         // Reset all players to start tiles (keep dots as-is on death; round start keeps current map dots too)
         for (let i = 0; i < this.players.length; i++) {

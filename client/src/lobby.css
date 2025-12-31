@@ -466,3 +466,176 @@ body {
 @media (prefers-reduced-motion: reduce) {
     .btn:active { transform: none; }
 }
+
+/* Chat container */
+.chat {
+    width: 320px;
+    display: grid;
+    gap: 10px;
+}
+
+/* Scroll area */
+.chat__log {
+    height: 200px;
+    overflow-y: auto;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(0,0,0,0.65);
+    box-shadow:
+            0 0 0 3px rgba(46,107,255,0.06),
+            0 10px 28px rgba(0,0,0,0.45);
+
+    /* Use the same animated border ring as the rest of your UI */
+    position: relative;
+    overflow: hidden;
+}
+
+.chat__log::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: var(--borderW);
+
+    background: conic-gradient(
+            from 0turn,
+            rgba(0,0,0,0) 0turn,
+            rgba(0,0,0,0) 0.08turn,
+            rgba(255,225,74,0.95) 0.16turn,
+            rgba(69,243,255,0.95) 0.28turn,
+            rgba(255,82,214,0.95) 0.40turn,
+            rgba(46,107,255,0.95) 0.52turn,
+            rgba(0,0,0,0) 0.62turn,
+            rgba(0,0,0,0) 1turn
+    );
+
+    -webkit-mask:
+            linear-gradient(#000 0 0) content-box,
+            linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+            linear-gradient(#000 0 0) content-box,
+            linear-gradient(#000 0 0);
+    mask-composite: exclude;
+
+    animation: ringSpin var(--glowSpeed) linear infinite;
+    opacity: 0.65;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.chat__log::after {
+    content: "";
+    position: absolute;
+    inset: -18px;
+    border-radius: inherit;
+    background:
+            radial-gradient(circle at 20% 20%, rgba(46,107,255,0.22), transparent 55%),
+            radial-gradient(circle at 80% 30%, rgba(255,82,214,0.16), transparent 60%),
+            radial-gradient(circle at 60% 90%, rgba(69,243,255,0.12), transparent 60%);
+    filter: blur(10px);
+    opacity: 0.45;
+    animation: glowPulse var(--pulseSpeed) ease-in-out infinite;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.chat__log > * {
+    position: relative;
+    z-index: 1;
+}
+
+/* Messages */
+.chat__msg {
+    font-family: var(--mono);
+    font-size: 18px;
+    line-height: 1.25;
+    padding: 6px 8px;
+    border-radius: 10px;
+}
+
+.chat__msg:nth-child(odd) {
+    background: rgba(255,255,255,0.04);
+}
+
+.chat__id {
+    color: rgba(255,225,74,0.95);
+    text-shadow: 0 0 10px rgba(255,225,74,0.12);
+}
+
+.chat__text {
+    color: rgba(255,255,255,0.82);
+}
+
+/* Composer row */
+.chat__composer {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: center;
+}
+
+/* Input */
+.chat__input {
+    width: 100%;
+    border: 0;
+    outline: none;
+    padding: 12px 12px;
+    border-radius: 14px;
+
+    font-family: var(--mono);
+    font-size: 20px;
+    color: rgba(255,255,255,0.92);
+
+    background: rgba(0,0,0,0.65);
+    box-shadow:
+            0 0 0 3px rgba(46,107,255,0.06),
+            inset 0 0 0 2px rgba(255,255,255,0.06);
+
+    transition: box-shadow 160ms ease, filter 160ms ease, transform 160ms ease;
+}
+
+.chat__input::placeholder {
+    color: rgba(255,255,255,0.45);
+}
+
+.chat__input:focus {
+    box-shadow:
+            0 0 0 3px rgba(69,243,255,0.14),
+            0 0 18px rgba(69,243,255,0.10),
+            inset 0 0 0 2px rgba(69,243,255,0.18);
+    filter: brightness(1.05);
+}
+
+/* Send button uses your existing .btn styles.
+   Just a tiny sizing tweak to match input height */
+.chat__send {
+    padding: 14px 14px;
+    min-width: 92px;
+}
+
+/* Scrollbar styling (Chrome/Edge/Safari) */
+.chat__log::-webkit-scrollbar {
+    width: 10px;
+}
+.chat__log::-webkit-scrollbar-track {
+    background: rgba(0,0,0,0.35);
+    border-radius: 999px;
+}
+.chat__log::-webkit-scrollbar-thumb {
+    background: rgba(46,107,255,0.35);
+    border-radius: 999px;
+    border: 2px solid rgba(0,0,0,0.35);
+}
+.chat__log::-webkit-scrollbar-thumb:hover {
+    background: rgba(69,243,255,0.38);
+}
+
+/* Reduce motion */
+@media (prefers-reduced-motion: reduce) {
+    .chat__log::before,
+    .chat__log::after {
+        animation: none !important;
+    }
+}
+

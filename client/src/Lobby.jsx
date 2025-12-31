@@ -71,7 +71,7 @@ export default function Lobby() {
                 <section className="panel">
                     <div className="panel__header">
                         <h2 className="panel__title">Players</h2>
-                        <span className="panel__pill">{players.filter(p => p.ready).length} / 2</span>
+                        <span className="panel__pill">{players.filter(p => p.ready).length} / {players.length}</span>
                     </div>
 
                     <ul className="playerList">
@@ -84,27 +84,6 @@ export default function Lobby() {
                                 {player.ready ? <span className="playerTag playerTag--ready">Ready</span> :  <span className="playerTag playerTag--notReady">Not Ready</span>}
                             </div>
                         </li>))}
-
-                        {/*<li className="playerRow">*/}
-                        {/*    <div className="playerRow__left">*/}
-                        {/*        <span className="statusDot statusDot--notReady" aria-label="Not ready"></span>*/}
-                        {/*        <span className="playerName">PlayerTwo</span>*/}
-                        {/*    </div>*/}
-                        {/*    <div className="playerRow__right">*/}
-                        {/*        <span className="playerTag playerTag--notReady">Not Ready</span>*/}
-                        {/*    </div>*/}
-                        {/*</li>*/}
-
-                        {/*<li className="playerRow playerRow--ready">*/}
-                        {/*    <div className="playerRow__left">*/}
-                        {/*        <span className="statusDot statusDot--notReady" aria-label="Not ready"></span>*/}
-                        {/*        <span className="playerName">HostGuy</span>*/}
-                        {/*        <span className="hostBadge" title="Host">HOST</span>*/}
-                        {/*    </div>*/}
-                        {/*    <div className="playerRow__right">*/}
-                        {/*        <span className="playerTag playerTag--notReady">Not Ready</span>*/}
-                        {/*    </div>*/}
-                        {/*</li>*/}
                     </ul>
                 </section>
 
@@ -124,7 +103,7 @@ export default function Lobby() {
                             <p className="hint__title">Tip</p>
                             <p className="hint__text">You don't need bubble wrap to know when it's chowder time.</p>
                         </div>
-                        <Chat />
+                        <Chat players={players || []} />
                     </div>
                 </aside>
             </main>

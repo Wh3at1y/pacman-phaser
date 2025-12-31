@@ -2,12 +2,13 @@ import { useEffect, useState } from "react"
 import socket from "../socket";
 
 type ChatMessage = {
-    id: string
+    senderId: string
     text: string
-    timestamp: number
+    timestamp: number,
+    socketId: string,
 }
 
-export default function Chat() {
+export default function Chat({players}) {
     const [messages, setMessages] = useState<ChatMessage[]>([])
     const [input, setInput] = useState("")
 
@@ -29,21 +30,29 @@ export default function Chat() {
     }
 
     return (
-        <div style={{ width: 300 }}>
-            <div style={{ height: 200, overflowY: "auto", border: "1px solid #444" }}>
+        <div className="chat">
+            <div className="chat__log">
                 {messages.map((msg, i) => (
-                    <div key={i}>
-                        <strong>{msg.id.slice(0, 4)}:</strong> {msg.text}
+                    <div key={i} className="chat__msg">
+                        <strong className="chat__id">{players.find(p => p.socketId === msg.senderId).name}:</strong>{" "}
+                        <span className="chat__text">{msg.text}</span>
                     </div>
                 ))}
             </div>
 
-            <input
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && sendMessage()}
-            />
-            <button onClick={sendMessage}>Send</button>
+            <div className="chat__composer">
+                <input
+                    className="chat__input"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                    placeholder="Type message…"
+                />
+                <button className="btn btn--ghost chat__send" onClick={sendMessage}>
+                    Send
+                </button>
+            </div>
         </div>
+
     )
 }

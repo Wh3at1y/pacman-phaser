@@ -151,6 +151,17 @@ io.on("connection", (socket) => {
         io.emit("PlayerState", msg);
     });
 
+    socket.on("chat:message", message => {
+        const chatMessage = {
+            senderId: socket.id,
+            text: message,
+            timestamp: Date.now()
+        }
+
+        // Send to everyone (including sender)
+        io.emit("chat:message", chatMessage)
+    })
+
     socket.on("disconnect", () => {
         const p = players.get(playerId);
         if (!p) return;

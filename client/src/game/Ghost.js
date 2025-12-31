@@ -144,6 +144,40 @@ export default class Ghost {
         }
     }
 
+    reconcileToGrid() {
+        const TS = this.scene.TILE_SIZE;
+        const cols = this.scene.levelCols;
+        const rows = this.scene.levelRows;
+
+        const mapW = cols * TS;
+        const mapH = rows * TS;
+
+        // Hard recover only if truly out of bounds
+        if (this.y < -TS || this.y > mapH + TS || this.x < -TS * 2 || this.x > mapW + TS * 2) {
+            this.x = Phaser.Math.Clamp(this.x, TS / 2, mapW - TS / 2);
+            this.y = Phaser.Math.Clamp(this.y, TS / 2, mapH - TS / 2);
+
+            this.tileX = Phaser.Math.Wrap(Math.floor(this.x / TS), 0, cols);
+            this.tileY = Phaser.Math.Clamp(Math.floor(this.y / TS), 0, rows - 1);
+
+            this.snapToNearestPassable();
+            this.snapToCenter();
+            return;
+        }
+
+        // Soft recover only if our pixel-derived tile is not passable
+        const pxTileX = Phaser.Math.Wrap(Math.floor(this.x / TS), 0, cols);
+        const pxTileY = Phaser.Math.Clamp(Math.floor(this.y / TS), 0, rows - 1);
+
+        // ✅ Correct signature (from=to)
+        if (!this.scene.isGhostPassable(pxTileX, pxTileY, pxTileX, pxTileY)) {
+            this.tileX = pxTileX;
+            this.tileY = pxTileY;
+            this.snapToNearestPassable();
+            this.snapToCenter();
+        }
+    }
+
     snapToNearestPassable() {
         const cols = this.scene.levelCols;
         const rows = this.scene.levelRows;
@@ -568,6 +602,7 @@ export default class Ghost {
             remaining -= step;
         }
 
+        this.reconcileToGrid();
         this.sprite.setPosition(this.x, this.y);
         this._drawGhost();
 

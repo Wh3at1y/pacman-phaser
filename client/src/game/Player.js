@@ -25,6 +25,7 @@ export default class Player {
         this.controls = controls;
         this.socketId = socketId;
         this.isRemote = isRemote;
+        this.playerId = opts.playerId;
 
         this.startTile = { x: startTile.x, y: startTile.y };
 
@@ -38,6 +39,13 @@ export default class Player {
 
         this.speed = speed;
         this.radius = radius;
+
+        this.isAlive = true;
+        this.outUntilRoundEnd = false;
+        this.eliminated = false;
+        this.spawnTile = { ...opts.startTile };
+        this.playerId = opts.playerId;
+
 
         // Authoritative pixel position lives on an invisible physics circle.
         this.sprite = this.scene.physics.add.existing(
@@ -228,11 +236,65 @@ export default class Player {
         return true;
     }
 
+    setAlive(alive) {
+        this.isAlive = alive;
+
+        // Disable physics while dead so you can't collide/eat dots accidentally
+        if (this.sprite?.body) {
+            this.sprite.body.enable = alive;
+        }
+
+        // Your Pac-Man visuals are the Graphics, not the sprite.
+        if (this.graphics) {
+            this.graphics.setVisible(alive);
+            if (!alive) this.graphics.clear(); // fully remove the body/mouth when dead
+        }
+
+        // Reset mouth state on respawn so you don't come back as a weird blob
+        if (alive) {
+            this.mouthAngle = 0.15;
+            this.mouthOpening = true;
+            this.setSpectatorVisual(false);
+
+            // Force a redraw immediately (so you don't wait a frame and see "nothing")
+            this.draw();
+        }
+    }
+
+    setSpectatorVisual(isSpectator) {
+        if (!this.graphics) return;
+        this.graphics.setAlpha(isSpectator ? 0.25 : 1);
+    }
+
+    resetToSpawn() {
+        const TS = this.scene.TILE_SIZE;
+        this.tileX = this.spawnTile.x;
+        this.tileY = this.spawnTile.y;
+
+        const px = this.tileX * TS + TS / 2;
+        const py = this.tileY * TS + TS / 2;
+
+        this.sprite.x = px;
+        this.sprite.y = py;
+        this.netTargetX = px;
+        this.netTargetY = py;
+
+        // Also reset direction so they don't “launch” on respawn
+        this.direction = { x: 1, y: 0 };
+        this.nextDirection = { x: 1, y: 0 };
+    }
+
+
     /**
      * Movement update. Returns whether Pac-Man moved this frame.
      * @param {number} delta ms
      */
     update(delta) {
+        if (!this.isAlive) {
+            // Still interpolate remote net position if you want “ghost spectators” to drift,
+            // but for your rules: dead should just sit there.
+            return;
+        }
         // Remote players: no grid sim, just interpolate.
         if (this.isRemote) {
             const moved = this._applyRemoteInterpolation();

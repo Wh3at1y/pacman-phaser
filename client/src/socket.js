@@ -5,7 +5,8 @@ const getOrCreatePlayerId = () => {
     let id = localStorage.getItem(key);
     if (!id) {
         // Works in modern browsers. If you need older support, use uuid lib.
-        id = crypto.randomUUID();
+        // id = crypto.randomUUID();
+        id = Date.now()
         localStorage.setItem(key, id);
     }
     return id;
@@ -15,7 +16,7 @@ const initializeSocket = () => {
     if (!window.socket) {
         const playerId = getOrCreatePlayerId();
 
-        window.socket = io("https://4752002db531.ngrok-free.app", {
+        window.socket = io({
             transports: ["websocket"],          // optional but helps with ngrok weirdness
             auth: { playerId },                 // send stable identity
             reconnection: true,

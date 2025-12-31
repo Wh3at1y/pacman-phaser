@@ -17,9 +17,6 @@ const PACMAN_START_TILES = [
 
 const colors = [0xffff00, 0x800080, 0xffffff, 0x008000];
 
-// Wall symbols (your ASCII maze)
-const WALL_TILES = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-", "~"];
-
 export default class MainScene extends Phaser.Scene {
     constructor(onHudUpdate, players, currentPlayer) {
         super("MainScene");
@@ -47,14 +44,13 @@ export default class MainScene extends Phaser.Scene {
         this.isRoundActive = false;
 
         this.round = this.registry.get("round") ?? 1;
-        this.score = this.registry.get("score") ?? 0;
+        this.playerScores = {}
 
         this.registry.set("numPlayers", this.currentPlayers.length);
         this.numPlayers = Math.max(1, Math.min(MAX_PLAYERS, this.registry.get("numPlayers") ?? 1));
         this.registry.set("numPlayers", this.numPlayers);
 
         this.registry.set("round", this.round);
-        this.registry.set("score", this.score);
 
         this.dotsRemaining = 0;
         this.dotsCollected = 0;
@@ -94,6 +90,7 @@ export default class MainScene extends Phaser.Scene {
                 radius: TILE_SIZE * 0.7,
                 controls,
                 socketId: this.currentPlayers[i]?.socketId,
+                playerId: this.currentPlayers[i]?.playerId,
                 color: colors[i],
                 isRemote: this.currentPlayers[i]?.socketId !== this.currentPlayer.socketId,
             });
@@ -101,6 +98,7 @@ export default class MainScene extends Phaser.Scene {
             p.graphics.setDepth(1001);
             this.players.push(p);
         }
+
 
         // ---- NETWORKING ----
         // Key idea:
@@ -187,8 +185,110 @@ export default class MainScene extends Phaser.Scene {
             this.input.keyboard.off("keydown", this._onKeyDown);
             this.socket.off("KeyPressed", this._onKeyPressed);
             this.socket.off("PlayerState", this._onPlayerState);
+            this.socket.off("DotEatenConfirmed");
+            this.socket.off("BackToLobby");
+            this.socket.off("RoundEnded");
+            this.socket.off("LivesUpdate");
             this.netTick?.remove?.();
         });
+
+        this.socket.on("DotEatenConfirmed", ({ x, y, type, scores }) => {
+            const key = this._dotKey(x, y);
+
+            // Clear pending request lock (so local can eat next dot)
+            if (this._pendingDotRequests) this._pendingDotRequests.delete(key);
+
+            // Remove dot visually if still present
+            const dot = this.dotMap.get(key);
+            if (dot) {
+                dot.destroy();
+                this.dotMap.delete(key);
+                this.dotsRemaining--;
+            }
+
+            // Frightened should start when server says power dot was eaten
+            if (type === "power") {
+                this.triggerFrightened(); // or triggerFrightened(durationMs) if you support it
+            }
+
+            // Update scores from authoritative snapshot
+            if (scores) {
+                this.playerScores = scores;
+                this.onHudUpdate?.({
+                    playerScores: this.playerScores,
+                });
+            }
+
+            if (this.dotsRemaining <= 0) {
+                // prevent double-calls if multiple confirms arrive close together
+                if (!this._roundEnding) {
+                    this._roundEnding = true;
+                    this.endRound();
+                    this.time.delayedCall(250, () => (this._roundEnding = false));
+                }
+            }
+        });
+
+        this.livesByPlayerId = this.livesByPlayerId ?? {};
+        this.deathsByPlayerId = this.deathsByPlayerId ?? {};
+
+        this.socket.on("LivesUpdate", ({ playerId, lives, eliminated }) => {
+
+            // Find the matching Player instance.
+            // IMPORTANT: your Player instances currently store socketId (not playerId). :contentReference[oaicite:5]{index=5}
+            // So you need to store playerId on Player when constructing it (next section).
+            console.log(this.players, playerId)
+            const p = this.players.find(pl => pl.playerId === playerId);
+            if (!p) return;
+            console.log('FOUND PLAYER', p)
+            if (eliminated) {
+                p.setAlive(false);
+                p.outUntilRoundEnd = false;
+                p.eliminated = true;
+                p.setSpectatorVisual(true);
+            } else {
+                // died but still has lives: out until round end
+                p.setAlive(false);
+                p.outUntilRoundEnd = true;
+                p.setSpectatorVisual(true);
+            }
+            this.onHudUpdate?.({
+                lives: lives
+            });
+        });
+
+        this.socket.on("RoundEnded", ({ respawn, round }) => {
+            for (const p of this.players) {
+                if (p.eliminated) continue;
+                if (respawn.includes(p.playerId)) {
+                    p.outUntilRoundEnd = false;
+                    p.resetToSpawn();
+                    p.setAlive(true);
+                    p.setSpectatorVisual(false);
+                }
+            }
+
+            // Start next round locally (or just call startRound if that's your pattern)
+            this.startRound();
+            this.onHudUpdate({round})
+        });
+
+
+        this._onBackToLobby = () => {
+            // stop game loop cleanly
+            this.isRoundActive = false;
+            this.stopEatSound();
+
+            // tell React to switch screens/routes (best practice)
+            this.onHudUpdate?.({ backToLobby: true });
+
+            // If you're NOT using React routing and want brute force:
+            // window.location.href = "/";  // or "/lobby"
+        };
+
+        this.socket.on("BackToLobby", this._onBackToLobby);
+
+
 
         // ---- READY OVERLAY ----
         this.readyOverlay = this.add
@@ -276,7 +376,6 @@ export default class MainScene extends Phaser.Scene {
 
         // ---- HUD ----
         this.onHudUpdate?.({
-            score: this.score,
             dotsCollected: this.dotsCollected,
             dotsRemaining: this.dotsRemaining,
             round: this.round,
@@ -292,10 +391,6 @@ export default class MainScene extends Phaser.Scene {
 
     getLocalPlayer() {
         return this.players.find((p) => p.socketId === this.currentPlayer.socketId) ?? this.players[0];
-    }
-
-    isWallTile(tile) {
-        return WALL_TILES.includes(tile);
     }
 
     isGhostHouseTile(x, y) {
@@ -331,7 +426,6 @@ export default class MainScene extends Phaser.Scene {
             inHouseMaxY: maxHouseY === -Infinity ? null : maxHouseY,
         };
     }
-
 
     // Ghost-specific passability rules.
     // Ghost.js calls this as: isGhostPassable(fromX, fromY, toX, toY)
@@ -429,10 +523,14 @@ export default class MainScene extends Phaser.Scene {
         if (!this.isRoundActive) return false;
         if (!player?.sprite) return false;
 
+        // Server-authoritative: only local player requests dot eats
+        if (player.isRemote) return false;
+
         const x = player.tileX;
         const y = player.tileY;
 
-        const dot = this.dotMap.get(this._dotKey(x, y));
+        const key = this._dotKey(x, y);
+        const dot = this.dotMap.get(key);
         if (!dot || !dot.active) return false;
 
         // Only eat when at/near the center of the tile.
@@ -441,30 +539,30 @@ export default class MainScene extends Phaser.Scene {
         const dist = Phaser.Math.Distance.Between(player.sprite.x, player.sprite.y, cx, cy);
         if (dist > TILE_SIZE * 0.2) return false;
 
+        // Determine dot type (whatever you stored on the dot)
         const type = dot.getData("type") || "normal";
 
-        dot.destroy();
-        this.dotMap.delete(this._dotKey(x, y));
+        // Prevent spamming repeated requests while sitting on the same dot.
+        // This gets cleared when DotEatenConfirmed comes back.
+        this._pendingDotRequests ??= new Set();
+        if (this._pendingDotRequests.has(key)) return false;
+        this._pendingDotRequests.add(key);
 
-        this.lastEatTime = this.time.now;
+        // Optional sequencing to help ignore stale/duplicate server messages
+        this.dotSeq = (this.dotSeq ?? 0) + 1;
 
-        const points = type === "power" ? 50 : 10;
-        this.score += points;
-        this.registry.set("score", this.score);
-
-        this.dotsRemaining--;
-        this.dotsCollected++;
-
-        this.onHudUpdate?.({
-            score: this.score,
-            dotsCollected: this.dotsCollected,
-            dotsRemaining: this.dotsRemaining,
-            round: this.round,
-            numPlayers: this.numPlayers,
+        // Do NOT destroy dot or update score locally (server authoritative)
+        this.socket.emit("DotEaten", {
+            playerId: this.currentPlayer.playerId, // stable identity
+            x,
+            y,
+            type,
+            seq: this.dotSeq,
+            t: this.time.now,
         });
 
-        if (type === "power") this.triggerFrightened();
-        if (this.dotsRemaining <= 0) this.endRound();
+        // Optional: mark “ate recently” for chomping sound/animation only
+        this.lastEatTime = this.time.now;
 
         return true;
     }
@@ -505,15 +603,16 @@ export default class MainScene extends Phaser.Scene {
         this.stopEatSound();
         this.isRoundActive = false;
 
-        this.round++;
-        this.registry.set("round", this.round);
-        this.onHudUpdate?.({ round: this.round });
+        // tell server to broadcast respawn list
+        this.socket.emit("RoundEnded");
 
-        // New round: rebuild dots (your existing behavior)
-        this.buildDotsFromLevel();
+        // If you want dots to reset each round, keep buildDotsFromLevel().
+        // If you want dots to persist across rounds, remove it.
+        // this.buildDotsFromLevel();
 
-        this.time.delayedCall(150, () => this.startRound());
+        // do NOT immediately startRound here; wait for server RoundEnded
     }
+
 
     /* ===============================
        FRIGHTENED MODE
@@ -553,27 +652,27 @@ export default class MainScene extends Phaser.Scene {
     =============================== */
 
     checkGhostCollision() {
-        if (this.isDying) return null;
+        // Only the local player can die from local ghosts.
+        const player = this.getLocalPlayer?.() || this.players.find(p => !p.isRemote);
+        if (!player || !player.isAlive || player.outUntilRoundEnd || player.eliminated) return null;
 
-        const hit = (TILE_SIZE * 0.55) * (TILE_SIZE * 0.55);
+        for (const ghost of this.ghosts) {
+            if (!ghost?.sprite || !ghost.sprite.active) continue;
 
-        for (const p of this.players) {
-            if (!p?.sprite) continue;
+            const d = Phaser.Math.Distance.Between(
+                player.sprite.x, player.sprite.y,
+                ghost.sprite.x, ghost.sprite.y
+            );
 
-            const px = p.sprite.x;
-            const py = p.sprite.y;
-
-            for (const g of this.ghosts) {
-                if (!g?.sprite) continue;
-                const dx = g.sprite.x - px;
-                const dy = g.sprite.y - py;
-                const d2 = dx * dx + dy * dy;
-                if (d2 < hit) return { ghost: g, player: p };
+            // Use whatever radius you already had
+            if (d < this.TILE_SIZE * 0.6) {
+                return { ghost, player };
             }
         }
 
         return null;
     }
+
 
     eatGhost(ghost) {
         if (!ghost) return;
@@ -591,18 +690,34 @@ export default class MainScene extends Phaser.Scene {
         ghost.onEaten?.();
     }
 
-    killPacmen() {
-        if (this.isDying) return;
-        this.isDying = true;
+    areAllPlayersOut() {
+        return this.players.every(p => !p.isAlive || p.outUntilRoundEnd);
+    }
 
-        this.stopEatSound();
-        this.deadSound?.play();
+    killPlayer(player) {
+        if (!player) return;
 
-        this.time.delayedCall(900, () => {
-            this.isDying = false;
-            // Reset players + ghosts only. Dots persist.
-            this.startRound();
-        });
+        // Prevent repeated kills while overlapping a ghost
+        if (!player.isAlive) return;
+
+        // Mark ONLY this player as out for the round
+        player.setAlive(false);
+        player.outUntilRoundEnd = true;
+        player.setSpectatorVisual(true);
+
+        // Only tell the server if THIS client owns the victim
+        if (!player.isRemote) {
+            this.stopEatSound();
+            this.deadSound?.play();
+
+            // IMPORTANT: emit the victim's playerId, not currentPlayer's
+            this.socket.emit("PlayerDied", { victimPlayerId: player.playerId });
+        }
+
+        // End the round ONLY if everyone is out
+        if (this.areAllPlayersOut()) {
+            this.endRound();
+        }
     }
 
     getNearestPlayerForGhost(ghost) {
@@ -611,17 +726,21 @@ export default class MainScene extends Phaser.Scene {
 
         for (const p of this.players) {
             if (!p?.sprite) continue;
+            if (!p.isAlive || p.outUntilRoundEnd || p.eliminated) continue;
+
             const dx = p.sprite.x - ghost.sprite.x;
             const dy = p.sprite.y - ghost.sprite.y;
             const d2 = dx * dx + dy * dy;
+
             if (d2 < bestD2) {
                 bestD2 = d2;
                 best = p;
             }
         }
 
-        return best ?? this.players[0];
+        return best ?? this.getLocalPlayer();
     }
+
 
     /* ===============================
        UPDATE
@@ -669,11 +788,15 @@ export default class MainScene extends Phaser.Scene {
         // ---- COLLISION ----
         const hit = this.checkGhostCollision();
         if (hit) {
-            if (hit.ghost.isFrightened?.()) this.eatGhost(hit.ghost);
-            else {
-                this.killPacmen();
-                for (const p of this.players) p.render(false);
-                return;
+            const { ghost, player } = hit;
+
+            // Only local deaths should be processed and emitted
+            if (player.isRemote) return;
+
+            if (ghost.isFrightened?.()) {
+                this.eatGhost(ghost);
+            } else {
+                this.killPlayer(player);
             }
         }
 

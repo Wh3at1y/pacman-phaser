@@ -11,16 +11,15 @@ export default function Lobby() {
     const [isConnecting, setIsConnecting] = useState(true)
     const [players, setPlayers] = useState([])
     const [startGame, setStartGame] = useState(false)
+    const [previousGame, setPreviousGame] = useState(null)
 
 
     useEffect(() => {
         const onConnect = () => {
-            console.log("Connected", socket.id);
             setIsConnecting(false);
         };
 
         const onJoined = (playersMap) => {
-            console.log("PLAYERS", Object.values(playersMap));
             setPlayers(Object.values(playersMap));
         };
 
@@ -30,14 +29,12 @@ export default function Lobby() {
 
         socket.on("connect", onConnect);
         socket.on("joined", onJoined);
-        socket.on("start_game_all", startGame);
+        socket.on("startGame", startGame);
 
         return () => {
             socket.off("connect", onConnect);
             socket.off("joined", onJoined);
-            // Optional: keep connection alive across route changes.
-            // If you DO want to disconnect when Lobby unmounts:
-            // socket.disconnect();
+            socket.disconnect();
         };
     }, []);
 
@@ -46,12 +43,17 @@ export default function Lobby() {
     };
 
     const handleStart = () => {
-        socket.emit("start_game");
+        socket.emit("hostStart");
     }
 
     const currentPlayer = players.find(player => player.socketId === socket.id) || null
+    const allPlayersReady = players.every(player => player.ready)
 
-    return startGame ? <RunGame players={players} currentPlayer={currentPlayer} /> : <div>
+
+    return startGame ? <RunGame players={players} currentPlayer={currentPlayer} backToLobby={(prevGameStats) => {
+        setStartGame(false)
+        setPreviousGame(prevGameStats)
+    }} /> : <div>
         {isConnecting || !currentPlayer ? <h1>Connecting to Server...</h1> : <div className="lobby">
             <header className="lobby__header">
                 <div>
@@ -78,7 +80,7 @@ export default function Lobby() {
                         {players.map(player => (<li className="playerRow" key={player.id}>
                             <div className="playerRow__left">
                                 {player.ready ? <span className="statusDot statusDot--ready" aria-label="Ready"></span> : <span className="statusDot statusDot--notReady" aria-label="Not ready"></span>}
-                                <span className="playerName">{player.name} {socket.id === player.id && "(Me)"}</span>
+                                <span className="playerName">{player.name} {currentPlayer.playerId === player.playerId && "(Me)"} {player.lobbyLeader && " - Host"}</span>
                             </div>
                             <div className="playerRow__right">
                                 {player.ready ? <span className="playerTag playerTag--ready">Ready</span> :  <span className="playerTag playerTag--notReady">Not Ready</span>}
@@ -97,7 +99,7 @@ export default function Lobby() {
                             <button className="btn btn--primary" type="button" onClick={onReady}>Un-Ready</button> :
                             <button className="btn btn--primary" type="button" onClick={onReady}>Ready Up</button>}
                         <button className="btn btn--ghost" type="button">PAC-MEN</button>
-                        <button className="btn btn--ghost" type="button" onClick={handleStart}>Start Game</button>
+                        <button className="btn btn--ghost" type="button" onClick={handleStart} disabled={!currentPlayer.lobbyLeader || !allPlayersReady}>Start Game</button>
 
                         <div className="hint">
                             <p className="hint__title">Tip</p>
@@ -105,6 +107,12 @@ export default function Lobby() {
                         </div>
                         <Chat players={players || []} />
                     </div>
+
+                    {previousGame && <div className="hint">
+                        <p className="hint__title">Previous Game Stats</p>
+                        <p className="hint__text">Total Rounds: {previousGame.round}</p>
+                        {Object.entries(previousGame.playerScores).map(([playerId, score]) => <p key={playerId} className="hint__text">{players.find(p => p.playerId === playerId).name}: {score}</p>)}
+                    </div>}
                 </aside>
             </main>
 

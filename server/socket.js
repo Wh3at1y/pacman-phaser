@@ -3,6 +3,8 @@ import initializeMovement from "./helpers/movement.js";
 import {waitASec} from "./helpers/timeout.js";
 import {level1} from "./levels/level1.js";
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || true;
+import GhostSim from "./helpers/GhostSim.js";
+
 
 let io;
 
@@ -226,37 +228,70 @@ function pickName() {
 // Added helpers
 
 function initGhostsForRound() {
-    // NOTE: Use your actual ghost house tiles here.
-    // These are placeholder spawn tiles you must match to your map.
-    const spawns = [
-        { tileX: 13, tileY: 14, dir: { x: 1, y: 0 } }, // Blinky
-        { tileX: 13, tileY: 16, dir: { x: -1, y: 0 } }, // Pinky
-        { tileX: 12, tileY: 16, dir: { x: 1, y: 0 } }, // Inky
-        { tileX: 14, tileY: 16, dir: { x: -1, y: 0 } }, // Clyde
-    ];
+    const TS = 24;
+
+    const rows = level1.length;
+    const cols = level1[0].length;
+
+    // Build a "world" adapter GhostSim expects
+    const world = {
+        TILE_SIZE: TS,
+        levelRows: rows,
+        levelCols: cols,
+        isGhostPassable, // use your REAL function (already defined in this file)
+        // optional if you want house logic; otherwise you can omit
+        isGhostHouseTile: (x, y) => {
+            const t = level1[y]?.[x];
+            return t === "X";
+        },
+        getGhost: (name) => currentGame.ghosts.get(name),
+    };
+
+    // Spawn tiles (match your map)
+    const spawns = {
+        blinky: { x: 13, y: 14, dir: { x: 1, y: 0 } },
+        pinky:  { x: 13, y: 16, dir: { x: -1, y: 0 } },
+        inky:   { x: 12, y: 16, dir: { x: 1, y: 0 } },
+        clyde:  { x: 14, y: 16, dir: { x: -1, y: 0 } },
+    };
+
+    // Scatter corners (classic-ish)
+    const scatter = {
+        blinky: { x: cols - 2, y: 1 },
+        pinky:  { x: 1, y: 1 },
+        inky:   { x: cols - 2, y: rows - 2 },
+        clyde:  { x: 1, y: rows - 2 },
+    };
 
     currentGame.ghosts = new Map();
-    ghostNames.forEach((name, i) => {
-        const s = spawns[i];
-        currentGame.ghosts.set(name, {
-            name,
-            tileX: s.tileX,
-            tileY: s.tileY,
-            x: s.tileX * 24 + 12,
-            y: s.tileY * 24 + 12,
-            dir: { ...s.dir },
-            mode: "scatter",
-            state: "active",
-            frightenedUntil: 0,
-            pendingReverse: false,
-            speed: 80, // base px/s (tune)
-        });
-    });
 
-    // Reset deterministic rng per round
+    for (const name of ["blinky", "pinky", "inky", "clyde"]) {
+        const s = spawns[name];
+        const g = new GhostSim(world, {
+            name,
+            speed: 80,
+            startTile: { x: s.x, y: s.y },
+            startDir: s.dir,
+            scatterTarget: scatter[name],
+        });
+
+        // If you want house state: configure it here by scanning door tiles "~"
+        // (You can leave this disabled initially to keep behavior predictable.)
+        // g.configureHouse(cfg); g.reset(Date.now());
+
+        currentGame.ghosts.set(name, g);
+    }
+
+    // Reset deterministic rng per round (you already do this)
     currentGame.rngSeed = 10000 + currentGame.round * 1337;
     currentGame.rng = mulberry32(currentGame.rngSeed);
+
+    // Ghost mode timing
+    currentGame.modeStartAt = Date.now();
+    currentGame.modeIndex = 0;
+    currentGame.mode = "scatter";
 }
+
 
 // VERY IMPORTANT: you must implement passability based on your level grid.
 // For now we rely on client-style tiles: walls are not passable.
@@ -322,98 +357,6 @@ function nearestAlivePlayerTile() {
     return best || { x: 13, y: 23 }; // fallback
 }
 
-function tickGhosts(dtSec) {
-    const now = Date.now();
-    const pacTile = nearestAlivePlayerTile();
-
-    for (const g of currentGame.ghosts.values()) {
-        // frightened flag
-        const frightened = now < g.frightenedUntil;
-
-        // reverse once on frightened start (arcade behavior)
-        if (g.pendingReverse) {
-            g.dir = { x: -g.dir.x, y: -g.dir.y };
-            g.pendingReverse = false;
-        }
-
-        // Pick direction at tile center (simplified center check)
-        const cx = g.tileX * 24 + 12;
-        const cy = g.tileY * 24 + 12;
-        const atCenter = Math.abs(g.x - cx) < 0.5 && Math.abs(g.y - cy) < 0.5;
-
-        // ---- STEP 3: validate next step and reroute if blocked ----
-        let nextTX = wrapXTile(g.tileX + g.dir.x);
-        let nextTY = g.tileY + g.dir.y;
-
-        if (!isGhostPassableTile(g.tileX, g.tileY, nextTX, nextTY)) {
-            const dirs = [
-                { x: 1, y: 0 },
-                { x: -1, y: 0 },
-                { x: 0, y: 1 },
-                { x: 0, y: -1 },
-            ];
-
-            const rev = { x: -g.dir.x, y: -g.dir.y };
-
-            // prefer not reversing unless needed
-            const options = dirs
-                .filter(d => !(d.x === rev.x && d.y === rev.y))
-                .filter(d => isGhostPassableTile(g.tileX, g.tileY, wrapXTile(g.tileX + d.x), g.tileY + d.y));
-
-            if (options.length > 0) {
-                const idx = Math.floor(currentGame.rng() * options.length);
-                g.dir = options[idx];
-            } else {
-                // last resort: allow reverse
-                const revTX = wrapXTile(g.tileX + rev.x);
-                const revTY = g.tileY + rev.y;
-                if (isGhostPassableTile(g.tileX, g.tileY, revTX, revTY)) {
-                    g.dir = rev;
-                }
-            }
-
-            // recompute next after possible dir change
-            nextTX = wrapXTile(g.tileX + g.dir.x);
-            nextTY = g.tileY + g.dir.y;
-
-            // still blocked? don't advance this tick
-            if (!isGhostPassableTile(g.tileX, g.tileY, nextTX, nextTY)) {
-                return; // or just skip advancing tile for this ghost
-            }
-        }
-
-// now advance tile coords (safe)
-        g.tileX = nextTX;
-        g.tileY = nextTY;
-
-
-        // move pixels
-        const speed = frightened ? g.speed * 0.6 : g.speed;
-        g.x += g.dir.x * speed * dtSec;
-        g.y += g.dir.y * speed * dtSec;
-
-        // wrap X pixels
-        const mapW = 28 * 24;
-        if (g.x < -12) g.x += mapW + 24;
-        if (g.x > mapW + 12) g.x -= mapW + 24;
-    }
-}
-
-function emitGhostState() {
-    io.emit("GhostState", {
-        t: Date.now(),
-        ghosts: Array.from(currentGame.ghosts.values()).map(g => ({
-            name: g.name,
-            x: g.x,
-            y: g.y,
-            tileX: g.tileX,
-            tileY: g.tileY,
-            dir: g.dir,
-            frightenedUntil: g.frightenedUntil,
-        })),
-    });
-}
-
 function startGhostLoop() {
     if (ghostTimer) return;
     let last = Date.now();
@@ -470,5 +413,105 @@ function wrapXTile(x) {
     if (x >= cols) return 0;
     return x;
 }
+
+
+const MODE_SCHEDULE = [
+    { mode: "scatter", ms: 7000 },
+    { mode: "chase",   ms: 20000 },
+    { mode: "scatter", ms: 7000 },
+    { mode: "chase",   ms: 20000 },
+    { mode: "scatter", ms: 5000 },
+    { mode: "chase",   ms: 20000 },
+    { mode: "scatter", ms: 5000 },
+    // then chase forever
+];
+
+function dirVecFromPlayerState(st) {
+    // If your movement helper stores dir as {x,y}, this is trivial:
+    if (st?.dir && typeof st.dir.x === "number") return st.dir;
+
+    // If it stores numeric directions, map them here:
+    // (Adjust if your project uses different values)
+    const d = st?.dir;
+    if (d === 1) return { x: -1, y: 0 };
+    if (d === 2) return { x: 1, y: 0 };
+    if (d === 3) return { x: 0, y: -1 };
+    if (d === 4) return { x: 0, y: 1 };
+    return { x: 1, y: 0 };
+}
+
+function getTargetPlayerForGhost(ghost) {
+    // simplest: nearest alive player to THIS ghost
+    let best = null;
+    let bestD2 = Infinity;
+
+    for (const [pid, st] of currentGame.playerState.entries()) {
+        if (!st || st.alive === false) continue;
+        const d2 = (st.tileX - ghost.tileX) ** 2 + (st.tileY - ghost.tileY) ** 2;
+        if (d2 < bestD2) {
+            bestD2 = d2;
+            best = st;
+        }
+    }
+
+    return best || { tileX: 13, tileY: 23, dir: { x: 1, y: 0 } };
+}
+
+function advanceMode(now) {
+    if (!MODE_SCHEDULE[currentGame.modeIndex]) {
+        currentGame.mode = "chase";
+        return;
+    }
+
+    const cur = MODE_SCHEDULE[currentGame.modeIndex];
+    const elapsed = now - currentGame.modeStartAt;
+
+    if (elapsed >= cur.ms) {
+        currentGame.modeIndex += 1;
+        currentGame.modeStartAt = now;
+        const next = MODE_SCHEDULE[currentGame.modeIndex];
+        currentGame.mode = next ? next.mode : "chase";
+
+        // If you want arcade reversal on mode change, flag it here.
+        // currentGame.pendingModeReverse = true;
+    } else {
+        currentGame.mode = cur.mode;
+    }
+}
+
+function tickGhosts(dtSec) {
+    const now = Date.now();
+    const dtMs = Math.floor(dtSec * 1000);
+
+    advanceMode(now);
+
+    for (const g of currentGame.ghosts.values()) {
+        // Apply current mode (server authoritative)
+        g.setMode(currentGame.mode);
+
+        // Frightened reversal: you already set pendingReverse when DotEaten :contentReference[oaicite:14]{index=14}
+        // If you still want it, keep it, but do it at center to avoid jitter.
+        if (g.pendingReverse && g.atTileCenter?.()) {
+            g.dir = { x: -g.dir.x, y: -g.dir.y };
+            g.pendingReverse = false;
+        } else if (g.pendingReverse && !g.atTileCenter?.()) {
+            // wait until center
+        }
+
+        const target = getTargetPlayerForGhost(g);
+        const pacTile = { x: target.tileX, y: target.tileY };
+        const pacDir = dirVecFromPlayerState(target);
+
+        g.update(dtMs, pacTile, pacDir, now);
+    }
+}
+
+function emitGhostState() {
+    io.emit("GhostState", {
+        t: Date.now(),
+        ghosts: Array.from(currentGame.ghosts.values()).map((g) => g.snapshot()),
+    });
+}
+
 
 

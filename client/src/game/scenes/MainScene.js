@@ -277,6 +277,29 @@ export default class MainScene extends Phaser.Scene {
             this.onHudUpdate({round})
         });
 
+        this._onGhostState = (pkt) => {
+            if (!pkt?.ghosts || !this.ghosts) return;
+
+            const t = this.time.now;
+            for (const gs of pkt.ghosts) {
+                const name = String(gs.name || "").toLowerCase();
+                const g = this.ghosts.find(x => x.name === name);
+                if (!g) continue;
+
+                g.pushNetSnapshot({
+                    t,
+                    x: gs.x,
+                    y: gs.y,
+                    tileX: gs.tileX,
+                    tileY: gs.tileY,
+                    dir: gs.dir,
+                    frightenedUntil: gs.frightenedUntil,
+                });
+            }
+        };
+
+
+        this.socket.on("GhostState", this._onGhostState);
 
         this._onBackToLobby = () => {
             // stop game loop cleanly
@@ -786,16 +809,9 @@ export default class MainScene extends Phaser.Scene {
         }
 
         // ---- GHOSTS ----
-        this.updateGhostMode(delta);
-
         for (const g of this.ghosts) {
-            g.setMode?.(this.ghostMode);
-
-            const targetPlayer = this.getNearestPlayerForGhost(g);
-            const pacTile = targetPlayer.getTile();
-            const pacDir = targetPlayer.getDirection?.();
-
-            g.update?.(delta, pacTile, pacDir);
+            // Server-authoritative: draw from snapshots every frame
+            g.renderFromNet?.(this.time.now);
         }
 
         // ---- COLLISION ----

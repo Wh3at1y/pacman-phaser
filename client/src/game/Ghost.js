@@ -34,6 +34,9 @@ export default class Ghost {
         this.tileX = opts.startTile?.x ?? 14;
         this.tileY = opts.startTile?.y ?? 11;
 
+        this.netSnapshots = [];
+        this.netInterpDelayMs = 110;
+
         // Remember home/start tile for resets
         this.startTile = { x: this.tileX, y: this.tileY };
 
@@ -77,6 +80,61 @@ export default class Ghost {
     destroy() {
         this.sprite?.destroy();
     }
+
+    pushNetSnapshot(s) {
+        this.netSnapshots.push(s);
+        if (this.netSnapshots.length > 12) this.netSnapshots.shift();
+    }
+
+    _applyRemoteInterpolation() {
+        const now = this.scene.time.now;
+        const renderTime = now - this.netInterpDelayMs;
+        const snaps = this.netSnapshots;
+        if (snaps.length === 0) return false;
+
+        while (snaps.length >= 3 && snaps[1].t <= renderTime) snaps.shift();
+
+        if (snaps.length === 1) {
+            const s = snaps[0];
+            const a = 1 - Math.pow(0.001, 1 / 60);
+            this.x += (s.x - this.x) * a;
+            this.y += (s.y - this.y) * a;
+            this.tileX = s.tileX;
+            this.tileY = s.tileY;
+            if (s.dir) this.dir = s.dir;
+            this.state = s.state ?? this.state;
+            this.mode = s.mode ?? this.mode;
+            this.frightenedUntil = s.frightenedUntil ?? this.frightenedUntil;
+            this.color = s.color ?? this.color;
+            return true;
+        }
+
+        const s0 = snaps[0], s1 = snaps[1];
+        const span = Math.max(1, s1.t - s0.t);
+        const alpha = Phaser.Math.Clamp((renderTime - s0.t) / span, 0, 1);
+
+        this.x = Phaser.Math.Linear(s0.x, s1.x, alpha);
+        this.y = Phaser.Math.Linear(s0.y, s1.y, alpha);
+
+        const use = alpha < 0.5 ? s0 : s1;
+        this.tileX = use.tileX;
+        this.tileY = use.tileY;
+        if (use.dir) this.dir = use.dir;
+        this.state = use.state ?? this.state;
+        this.mode = use.mode ?? this.mode;
+        this.frightenedUntil = use.frightenedUntil ?? this.frightenedUntil;
+        this.color = use.color ?? this.color;
+
+        return true;
+    }
+
+// Render-only update (no AI)
+    renderFromNet() {
+        this._applyRemoteInterpolation();
+        this.sprite.setPosition(this.x, this.y);
+        this._drawGhost();
+    }
+
 
     configureHouse(cfg) {
         // called by MainScene after scanning level
@@ -407,7 +465,7 @@ export default class Ghost {
         return best;
     }
 
-    _updateHouseState(delta) {
+    _updateHouseState() {
         // Handle inHouse / leaving behavior and set this.dir accordingly.
         if (!this.house.enabled) return;
 
@@ -571,56 +629,56 @@ export default class Ghost {
     }
 
 
-    update(delta, pacTile, pacDir) {
-        this.resetColorIfNeeded();
-
-        const TS = this.scene.TILE_SIZE;
-
-        // Decide special house state first (may set dir + tile steps)
-        this._updateHouseState(delta);
-
-        const curSpeed = this.isFrightened() ? (this.baseSpeed * 0.6) : this.baseSpeed;
-        let remaining = (curSpeed * delta) / 1000;
-        const maxStep = TS / 4;
-
-        while (remaining > 0) {
-            const step = Math.min(maxStep, remaining);
-
-            // Only run normal AI when active
-            if (this.state === "active" && this.atTileCenter()) {
-                this.snapToCenter();
-
-                if (this.isFrightened()) {
-                    this.dir = this.chooseDirAwayFrom(pacTile);
-                } else {
-                    const target =
-                        this.mode === "scatter"
-                            ? this.scatterTarget
-                            : this.getChaseTarget(pacTile, pacDir);
-                    this.dir = this.chooseDirToward(target);
-                }
-
-                const nextTX = this.wrapXTile(this.tileX + this.dir.x);
-                const nextTY = this.tileY + this.dir.y;
-                if (nextTY < 0 || nextTY >= this.scene.levelRows) break;
-                if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) break;
-
-                this.tileX = nextTX;
-                this.tileY = nextTY;
-            }
-
-            // Move pixel position
-            this.x += this.dir.x * step;
-            this.y += this.dir.y * step;
-
-            this.wrapXPixel();
-
-            remaining -= step;
-        }
-
-        this.reconcileToGrid();
-        this.sprite.setPosition(this.x, this.y);
-        this._drawGhost();
-
-    }
+    // update(delta, pacTile, pacDir) {
+    //     this.resetColorIfNeeded();
+    //
+    //     const TS = this.scene.TILE_SIZE;
+    //
+    //     // Decide special house state first (may set dir + tile steps)
+    //     this._updateHouseState(delta);
+    //
+    //     const curSpeed = this.isFrightened() ? (this.baseSpeed * 0.6) : this.baseSpeed;
+    //     let remaining = (curSpeed * delta) / 1000;
+    //     const maxStep = TS / 4;
+    //
+    //     while (remaining > 0) {
+    //         const step = Math.min(maxStep, remaining);
+    //
+    //         // Only run normal AI when active
+    //         if (this.state === "active" && this.atTileCenter()) {
+    //             this.snapToCenter();
+    //
+    //             if (this.isFrightened()) {
+    //                 this.dir = this.chooseDirAwayFrom(pacTile);
+    //             } else {
+    //                 const target =
+    //                     this.mode === "scatter"
+    //                         ? this.scatterTarget
+    //                         : this.getChaseTarget(pacTile, pacDir);
+    //                 this.dir = this.chooseDirToward(target);
+    //             }
+    //
+    //             const nextTX = this.wrapXTile(this.tileX + this.dir.x);
+    //             const nextTY = this.tileY + this.dir.y;
+    //             if (nextTY < 0 || nextTY >= this.scene.levelRows) break;
+    //             if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) break;
+    //
+    //             this.tileX = nextTX;
+    //             this.tileY = nextTY;
+    //         }
+    //
+    //         // Move pixel position
+    //         this.x += this.dir.x * step;
+    //         this.y += this.dir.y * step;
+    //
+    //         this.wrapXPixel();
+    //
+    //         remaining -= step;
+    //     }
+    //
+    //     this.reconcileToGrid();
+    //     this.sprite.setPosition(this.x, this.y);
+    //     this._drawGhost();
+    //
+    // }
 }

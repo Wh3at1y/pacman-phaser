@@ -1,13 +1,30 @@
-export default function initializeMovement(socket, io, playerId, players) {
+export default function initializeMovement(socket, io, playerId, players, playerState) {
+
     // --- Multiplayer Character State ---
     socket.on("PlayerState", (payload) => {
         if (!payload || typeof payload !== "object") return;
 
+        const socketId = payload.socketId || socket.id;
+
+        // ✅ store authoritative state for server-side systems (ghost sim)
+        // expected: x,y,tileX,tileY,dir,nextDir,isAlive/outUntilRoundEnd/etc
+        const pid = players.get(playerId)?.playerId;
+        if (pid) {
+            playerState.set(pid, {
+                ...payload,
+                socketId,
+                playerId: pid,
+                t: payload.t ?? Date.now(),
+            });
+        }
+
+        // existing broadcast
         io.emit("PlayerState", {
             ...payload,
-            socketId: payload.socketId || socket.id,
+            socketId,
         });
     });
+
 
     // --- Multiplayer movement input ---
     socket.on("KeyPressed", (arg1, arg2) => {

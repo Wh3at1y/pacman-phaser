@@ -6,10 +6,10 @@
 // - While state === "leaving": NO intersection/random turning.
 // - Tile-progress movement (grid locked) for consistent multiplayer sync.
 
-import { Server } from "socket.io";
+import {Server} from "socket.io";
 import initializeMovement from "./helpers/movement.js";
-import { waitASec } from "./helpers/timeout.js";
-import { level1, level1_intersections } from "./levels/level1.js";
+import {waitASec} from "./helpers/timeout.js";
+import {level1, level1_intersections} from "./levels/level1.js";
 
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || true;
 
@@ -34,10 +34,10 @@ function ghostSpeedPx(g) {
 }
 
 const GHOST_SPAWNS = {
-    blinky: { tileX: 14, tileY: 11, dir: { x: 1, y: 0 } },
-    pinky:  { tileX: 14, tileY: 14, dir: { x: 0, y: -1 } },
-    inky:   { tileX: 12, tileY: 14, dir: { x: 0, y: -1 } },
-    clyde:  { tileX: 16, tileY: 14, dir: { x: 0, y: -1 } },
+    blinky: {tileX: 14, tileY: 11, dir: {x: 1, y: 0}},
+    pinky: {tileX: 14, tileY: 14, dir: {x: 0, y: -1}},
+    inky: {tileX: 14, tileY: 14, dir: {x: 0, y: -1}},
+    clyde: {tileX: 16, tileY: 14, dir: {x: 0, y: -1}},
 };
 
 const RELEASE_BY_NAME_MS = {
@@ -48,16 +48,29 @@ const RELEASE_BY_NAME_MS = {
 };
 
 const DIRS = [
-    { x: 1, y: 0 },
-    { x: -1, y: 0 },
-    { x: 0, y: 1 },
-    { x: 0, y: -1 },
+    {x: 1, y: 0},
+    {x: -1, y: 0},
+    {x: 0, y: 1},
+    {x: 0, y: -1},
 ];
 
-function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-function wrapIndex(n, size) { if (n < 0) return size - 1; if (n >= size) return 0; return n; }
-function sameDir(a, b) { return a && b && a.x === b.x && a.y === b.y; }
-function oppositeDir(a, b) { return a && b && a.x === -b.x && a.y === -b.y; }
+function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+}
+
+function wrapIndex(n, size) {
+    if (n < 0) return size - 1;
+    if (n >= size) return 0;
+    return n;
+}
+
+function sameDir(a, b) {
+    return a && b && a.x === b.x && a.y === b.y;
+}
+
+function oppositeDir(a, b) {
+    return a && b && a.x === -b.x && a.y === -b.y;
+}
 
 function mulberry32(seed) {
     let t = seed >>> 0;
@@ -107,8 +120,13 @@ function isIntersection(tileX, tileY) {
     return getTile(level1_intersections, tileX, tileY) === "+";
 }
 
-function tileCenterX(tileX) { return tileX * TILE_SIZE + TILE_SIZE / 2; }
-function tileCenterY(tileY) { return tileY * TILE_SIZE + TILE_SIZE / 2; }
+function tileCenterX(tileX) {
+    return tileX * TILE_SIZE + TILE_SIZE / 2;
+}
+
+function tileCenterY(tileY) {
+    return tileY * TILE_SIZE + TILE_SIZE / 2;
+}
 
 function resetProgressAndSnap(g) {
     g.progress = 0;
@@ -144,86 +162,86 @@ function isGhostPassable(fromX, fromY, toX, toY) {
 
 // House analysis: find gate row/cols, staging tiles, and a bounding box around the house
 function computeHouseInfoFromLevel() {
-    const gateTiles = [];
-    let gateY = null;
+    const doorTiles = []; // gate tiles ("~" or "~~")
+    let minHouseY = Infinity;
+    let maxHouseY = -Infinity;
 
-    let minHouseY = Infinity, maxHouseY = -Infinity;
-    let minHouseX = Infinity, maxHouseX = -Infinity;
-
-    // Scan once
     for (let y = 0; y < ROWS; y++) {
         for (let x = 0; x < COLS; x++) {
             const t = level1[y][x];
-            if (isGateTileChar(t)) {
-                gateTiles.push({ x, y });
-                gateY = gateY ?? y;
-            }
+
+            // Treat BOTH "~" and "~~" as gate tiles (your map uses ~~)
+            if (t === "~" || t === "~~") doorTiles.push({x, y});
+
+            // Ghost box interior bounds (your map marks it with X)
             if (t === "X") {
                 minHouseY = Math.min(minHouseY, y);
                 maxHouseY = Math.max(maxHouseY, y);
-                minHouseX = Math.min(minHouseX, x);
-                maxHouseX = Math.max(maxHouseX, x);
             }
         }
     }
 
-    // If X tiles weren't used, fallback bounds from gate
-    if (minHouseX === Infinity && gateTiles.length) {
-        minHouseX = Math.min(...gateTiles.map(t => t.x)) - 4;
-        maxHouseX = Math.max(...gateTiles.map(t => t.x)) + 4;
-        minHouseY = gateTiles[0].y + 1;
-        maxHouseY = gateTiles[0].y + 6;
-    }
+    // Define exitTile exactly like MainScene: above the leftmost door tile
+    const leftDoor = doorTiles.length
+        ? doorTiles.slice().sort((a, b) => a.x - b.x)[0]
+        : null;
 
-    if (gateY === null) {
-        return {
-            gateTiles: [],
-            gateY: null,
-            stagingY: null,
-            outsideY: null,
-            stagingTiles: [],
-            gateXs: [],
-            bounds: null,
-        };
-    }
+    const exitTile = leftDoor ? {x: leftDoor.x, y: leftDoor.y - 1} : null;
 
-    const stagingY = gateY + 1;
-    const outsideY = gateY - 1;
-
-    const gateXs = [...new Set(gateTiles.map(t => t.x))].sort((a, b) => a - b);
-
-    // Staging tiles are tiles directly below each gate tile (same x, y=stagingY)
-    // but only those which can move UP onto the gate (so we know the gate rule works).
-    const stagingTiles = [];
-    for (const gx of gateXs) {
-        if (stagingY >= 0 && stagingY < ROWS) {
-            const ok = isGhostPassable(gx, stagingY, gx, gateY); // from staging up onto gate
-            if (ok) stagingTiles.push({ x: gx, y: stagingY });
-        }
-    }
-
-    // Tight bounds around the ghost house area:
-    // expand a bit to include interior wiggle room but prevent BFS from wandering into the maze.
-    const padX = 2;
-    const padY = 2;
-
-    const bounds = {
-        minX: clamp(minHouseX - padX, 0, COLS - 1),
-        maxX: clamp(maxHouseX + padX, 0, COLS - 1),
-        minY: clamp(Math.min(minHouseY, stagingY) - padY, 0, ROWS - 1),
-        maxY: clamp(Math.max(maxHouseY, stagingY) + padY, 0, ROWS - 1),
-    };
+    // Used to decide when we’re “outside”
+    const outsideY = doorTiles.length ? Math.min(...doorTiles.map(d => d.y)) - 1 : null;
 
     return {
-        gateTiles,
-        gateY,
-        stagingY,
+        doorTiles,
+        exitTile,
         outsideY,
-        stagingTiles,
-        gateXs,
-        bounds,
+        leftDoor,
+        inHouseMinY: minHouseY === Infinity ? null : minHouseY,
+        inHouseMaxY: maxHouseY === -Infinity ? null : maxHouseY,
     };
 }
+
+function manhattan(a, b) {
+    return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+function closestDoorTile(tileX, tileY) {
+    const doors = currentGame.house?.doorTiles || [];
+    if (!doors.length) return null;
+
+    let best = doors[0];
+    let bestD = Math.abs(tileX - best.x) + Math.abs(tileY - best.y);
+
+    for (let i = 1; i < doors.length; i++) {
+        const d = doors[i];
+        const dist = Math.abs(tileX - d.x) + Math.abs(tileY - d.y);
+        if (dist < bestD) {
+            best = d;
+            bestD = dist;
+        }
+    }
+    return best;
+}
+
+function chooseDirToward(tileX, tileY, currentDir, targetTile, allowReverse = true) {
+    const valid = getValidDirs(tileX, tileY, currentDir, allowReverse);
+    if (!valid.length) return null;
+
+    let best = valid[0];
+    let bestScore = Infinity;
+
+    for (const d of valid) {
+        const nx = tileX + d.x;
+        const ny = tileY + d.y;
+        const score = Math.abs(nx - targetTile.x) + Math.abs(ny - targetTile.y);
+        if (score < bestScore) {
+            bestScore = score;
+            best = d;
+        }
+    }
+    return best;
+}
+
 
 function pickNearestStagingTile(g) {
     const tiles = currentGame.house?.stagingTiles || [];
@@ -233,7 +251,10 @@ function pickNearestStagingTile(g) {
     for (let i = 1; i < tiles.length; i++) {
         const t = tiles[i];
         const d = Math.abs(g.tileX - t.x) + Math.abs(g.tileY - t.y);
-        if (d < bestD) { best = t; bestD = d; }
+        if (d < bestD) {
+            best = t;
+            bestD = d;
+        }
     }
     return best;
 }
@@ -244,12 +265,12 @@ function bfsFirstDirHouse(sx, sy, tx, ty) {
     const house = currentGame.house;
     if (!house?.bounds) return null;
 
-    const { minX, maxX, minY, maxY } = house.bounds;
+    const {minX, maxX, minY, maxY} = house.bounds;
 
     const inBounds = (x, y) => x >= minX && x <= maxX && y >= minY && y <= maxY;
 
     const key = (x, y) => `${x},${y}`;
-    const q = [{ x: sx, y: sy }];
+    const q = [{x: sx, y: sy}];
     const prev = new Map();
     prev.set(key(sx, sy), null);
 
@@ -273,7 +294,7 @@ function bfsFirstDirHouse(sx, sy, tx, ty) {
             if (prev.has(k)) continue;
 
             prev.set(k, cur);
-            q.push({ x: nx, y: ny });
+            q.push({x: nx, y: ny});
         }
     }
 
@@ -281,7 +302,7 @@ function bfsFirstDirHouse(sx, sy, tx, ty) {
     if (!prev.has(targetKey)) return null;
 
     // Walk back to find first step
-    let cur = { x: tx, y: ty };
+    let cur = {x: tx, y: ty};
     let p = prev.get(targetKey);
 
     while (p && !(p.x === sx && p.y === sy)) {
@@ -292,10 +313,10 @@ function bfsFirstDirHouse(sx, sy, tx, ty) {
     const dx = cur.x - sx;
     const dy = cur.y - sy;
 
-    if (dx === 1) return { x: 1, y: 0 };
-    if (dx === -1) return { x: -1, y: 0 };
-    if (dy === 1) return { x: 0, y: 1 };
-    if (dy === -1) return { x: 0, y: -1 };
+    if (dx === 1) return {x: 1, y: 0};
+    if (dx === -1) return {x: -1, y: 0};
+    if (dy === 1) return {x: 0, y: 1};
+    if (dy === -1) return {x: 0, y: -1};
     return null;
 }
 
@@ -313,8 +334,8 @@ function initGhosts(nowMs) {
             ghostId,
             tileX: s.tileX,
             tileY: s.tileY,
-            dir: { ...s.dir },
-            nextDir: { ...s.dir },
+            dir: {...s.dir},
+            nextDir: {...s.dir},
 
             progress: 0,
             x: tileCenterX(s.tileX),
@@ -362,7 +383,7 @@ function broadcastGhostSnapshot(force = false) {
     const minInterval = 1000 / GHOST_BROADCAST_HZ;
     if (!force && now - lastBroadcastMs < minInterval) return;
     lastBroadcastMs = now;
-    io.emit("GhostSnapshot", { t: now, ghosts: ghostSnapshotPayload() });
+    io.emit("GhostSnapshot", {t: now, ghosts: ghostSnapshotPayload()});
 }
 
 function chooseRandom(validDirs) {
@@ -394,8 +415,8 @@ function stepGhostTileProgress(g, dtSeconds, speedPx, allowTurns = true) {
     let remaining = speedPx * dtSeconds;
 
     if (!g.dir || (g.dir.x === 0 && g.dir.y === 0)) {
-        g.dir = { x: -1, y: 0 };
-        g.nextDir = { ...g.dir };
+        g.dir = {x: -1, y: 0};
+        g.nextDir = {...g.dir};
         resetProgressAndSnap(g);
     }
 
@@ -413,8 +434,8 @@ function stepGhostTileProgress(g, dtSeconds, speedPx, allowTurns = true) {
                 const chosen = chooseRandom(valid) || g.dir;
 
                 if (!sameDir(chosen, g.dir)) {
-                    g.dir = { ...chosen };
-                    g.nextDir = { ...chosen };
+                    g.dir = {...chosen};
+                    g.nextDir = {...chosen};
                     resetProgressAndSnap(g);
 
                     io.emit("GhostTurn", {
@@ -459,6 +480,46 @@ function stepGhostTileProgress(g, dtSeconds, speedPx, allowTurns = true) {
     }
 }
 
+function forceClydeExitHack(g, house) {
+    // Only run for Clyde while leaving
+    if (g.ghostId !== "clyde" || g.state !== "leaving") return false;
+
+    // If you're already outside, flip to active
+    if (house?.outsideY != null && g.tileY <= house.outsideY) {
+        g.state = "active";
+        resetProgressAndSnap(g);
+        return true;
+    }
+
+    // Only decide at tile centers
+    if (g.progress !== 0) return true; // keep moving current dir
+
+    // Step 1: move LEFT exactly one tile from his starting column
+    // (assumes Clyde spawns at tileX 16 like your file)
+    if (g.tileX === 16) {
+        const nx = g.tileX - 1;
+        const ny = g.tileY;
+        if (isGhostPassable(g.tileX, g.tileY, nx, ny)) {
+            g.dir = { x: -1, y: 0 };
+            g.nextDir = { x: -1, y: 0 };
+            resetProgressAndSnap(g);
+        }
+        return true;
+    }
+
+    // Step 2: after that, go UP until you're outside
+    const nx = g.tileX;
+    const ny = g.tileY - 1;
+    if (isGhostPassable(g.tileX, g.tileY, nx, ny)) {
+        g.dir = { x: 0, y: -1 };
+        g.nextDir = { x: 0, y: -1 };
+        resetProgressAndSnap(g);
+    }
+
+    return true;
+}
+
+
 function stepGhost(g, dtSeconds, nowMs) {
     g.tileX = wrapIndex(g.tileX, COLS);
     g.tileY = clamp(g.tileY, 0, ROWS - 1);
@@ -467,96 +528,103 @@ function stepGhost(g, dtSeconds, nowMs) {
     if (g.state === "inHouse" && nowMs >= g.releaseAtMs) {
         g.state = "leaving";
         g.leaveTarget = pickNearestStagingTile(g);
-        g.dir = { x: 0, y: -1 };
-        g.nextDir = { x: 0, y: -1 };
+        g.dir = {x: 0, y: -1};
+        g.nextDir = {x: 0, y: -1};
         resetProgressAndSnap(g);
     }
 
     // LEAVING: deterministic routing to staging tile, then up through gate and out
     if (g.state === "leaving") {
         const house = currentGame.house;
-        if (!house || house.gateY === null || house.stagingY === null || house.outsideY === null) {
+
+        // If no doors found, fail safe: activate
+        if (!house?.doorTiles?.length) {
             g.state = "active";
             resetProgressAndSnap(g);
             return;
         }
 
-        // If already outside, activate
-        if (g.tileY <= house.outsideY) {
+        // Clyde emergency “just leave” script
+        if (forceClydeExitHack(g, house)) {
+            // leaving is scripted: no turns
+            stepGhostTileProgress(g, dtSeconds, ghostSpeedPx(g), false);
+            g.seq++;
+            return;
+        }
+
+        // Determine the door tile we’re heading for (closest)
+        // Always use the same exit door (left-most), not "closest"
+        const door = house.leftDoor || (house.doorTiles?.length ? house.doorTiles.slice().sort((a, b) => a.x - b.x)[0] : null);
+        if (!door) {
             g.state = "active";
             resetProgressAndSnap(g);
             return;
         }
 
-        // Always ensure a target staging tile exists
-        if (!g.leaveTarget) g.leaveTarget = pickNearestStagingTile(g);
-        if (!g.leaveTarget) {
-            // No valid staging tile found: give up safely
-            g.state = "active";
-            resetProgressAndSnap(g);
-            return;
-        }
+// staging tile is directly BELOW the door (inside the box)
+        const staging = {x: door.x, y: door.y + 1};
 
+// Only change direction at centers
         if (g.progress === 0) {
-            const targetX = g.leaveTarget.x;
-            const targetY = g.leaveTarget.y; // staging row
-
-            // If on staging tile, go UP onto the gate
-            if (g.tileX === targetX && g.tileY === targetY) {
-                const up = { x: 0, y: -1 };
-                const ok = isGhostPassable(g.tileX, g.tileY, g.tileX, g.tileY - 1);
-                if (!ok) {
-                    // If the tile above isn't passable, your map encoding is inconsistent.
+            // 1) Not at staging yet: go to staging first
+            if (!(g.tileX === staging.x && g.tileY === staging.y)) {
+                const chosen = chooseDirToward(g.tileX, g.tileY, g.dir, staging, true);
+                if (!chosen) {
                     resetProgressAndSnap(g);
                     return;
                 }
+                g.dir = {...chosen};
+                g.nextDir = {...chosen};
+                resetProgressAndSnap(g);
+            }
+            // 2) At staging: go UP onto the door tile (gate)
+            else if (isGhostPassable(g.tileX, g.tileY, g.tileX, g.tileY - 1)) {
+                const up = {x: 0, y: -1};
                 g.dir = up;
                 g.nextDir = up;
                 resetProgressAndSnap(g);
-            }
-            // If on gate row, go UP again to outside
-            else if (g.tileY === house.gateY) {
-                const up = { x: 0, y: -1 };
-                g.dir = up;
-                g.nextDir = up;
+            } else {
                 resetProgressAndSnap(g);
+                return;
             }
-            // Otherwise, BFS toward the staging tile (restricted to house bounds)
-            else {
-                const d = bfsFirstDirHouse(g.tileX, g.tileY, targetX, targetY);
-                if (!d) {
-                    // fallback: prefer up, else slide horizontally toward target
-                    if (isGhostPassable(g.tileX, g.tileY, g.tileX, g.tileY - 1)) {
-                        g.dir = { x: 0, y: -1 };
-                        g.nextDir = { x: 0, y: -1 };
-                    } else if (g.tileX !== targetX) {
-                        const dir = { x: targetX > g.tileX ? 1 : -1, y: 0 };
-                        if (isGhostPassable(g.tileX, g.tileY, g.tileX + dir.x, g.tileY)) {
-                            g.dir = dir;
-                            g.nextDir = dir;
-                        } else {
-                            resetProgressAndSnap(g);
-                            return;
-                        }
-                    } else {
-                        resetProgressAndSnap(g);
-                        return;
-                    }
+        }
+
+
+        // Only change direction at centers
+        if (g.progress === 0) {
+            // If we're on the door tile, force UP through the gate
+            if (g.tileX === door.x && g.tileY === door.y) {
+                const up = {x: 0, y: -1};
+                // This must be passable by your gate rule (fromY > toY)
+                if (isGhostPassable(g.tileX, g.tileY, g.tileX, g.tileY - 1)) {
+                    g.dir = up;
+                    g.nextDir = up;
                     resetProgressAndSnap(g);
                 } else {
-                    g.dir = { ...d };
-                    g.nextDir = { ...d };
+                    // If this fails, your gate tiles in level1 aren't "~"/"~~" where you think.
                     resetProgressAndSnap(g);
+                    return;
+                }
+            } else {
+                // Otherwise: move toward the door tile (allow reverse so it can escape loops)
+                const chosen = chooseDirToward(g.tileX, g.tileY, g.dir, door, true);
+                if (chosen) {
+                    g.dir = {...chosen};
+                    g.nextDir = {...chosen};
+                    resetProgressAndSnap(g);
+                } else {
+                    resetProgressAndSnap(g);
+                    return;
                 }
             }
         }
 
-        // IMPORTANT: leaving is scripted, do not allow turns.
+        // Scripted movement only: NO intersection turns while leaving
         stepGhostTileProgress(g, dtSeconds, ghostSpeedPx(g), false);
         g.seq++;
 
-        // Once outside, become active
-        if (g.tileY <= house.outsideY) {
+        // Once outside (above the gate row), activate
+        if (house.outsideY !== null && g.tileY <= house.outsideY) {
             g.state = "active";
             resetProgressAndSnap(g);
         }
@@ -667,7 +735,7 @@ function backToLobby(reason = "all_eliminated") {
 // ---- Socket server ----
 export function initSocketServer(server) {
     io = new Server(server, {
-        cors: { origin: CLIENT_ORIGIN, methods: ["GET", "POST"], credentials: true },
+        cors: {origin: CLIENT_ORIGIN, methods: ["GET", "POST"], credentials: true},
         transports: ["websocket", "polling"],
     });
 
@@ -741,7 +809,7 @@ export function initSocketServer(server) {
         // Player movement relay
         initializeMovement(socket, io, playerId, currentGame.players);
 
-        socket.on("DotEaten", ({ playerId: eaterId, x, y, type, seq }) => {
+        socket.on("DotEaten", ({playerId: eaterId, x, y, type, seq}) => {
             if (!eaterId || !currentGame.players.has(eaterId)) return;
 
             const isPower = type === "power";
@@ -760,13 +828,13 @@ export function initSocketServer(server) {
             });
 
             if (isPower) {
-                io.emit("FrightenedStart", { durationMs: 7000 });
+                io.emit("FrightenedStart", {durationMs: 7000});
                 for (const g of currentGame.ghosts.values()) g.mode = "frightened";
                 broadcastGhostSnapshot(true);
             }
         });
 
-        socket.on("PlayerDied", ({ victimPlayerId }) => {
+        socket.on("PlayerDied", ({victimPlayerId}) => {
             if (!victimPlayerId) return;
             if (!currentGame.players.has(victimPlayerId)) return;
 
@@ -803,7 +871,7 @@ export function initSocketServer(server) {
                 broadcastGhostSnapshot(true);
             }
 
-            io.emit("RoundEnded", { respawn, round: currentGame.round });
+            io.emit("RoundEnded", {respawn, round: currentGame.round});
         });
 
         socket.on("GhostSnapshotRequest", () => {

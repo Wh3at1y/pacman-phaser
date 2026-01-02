@@ -1,10 +1,35 @@
-export default function initializeMovement(socket, io, playerId, players) {
+// src/helpers/movement.js (DROP-IN REPLACEMENT)
+// Stores latest PlayerState on server so ghosts can chase authoritatively.
+
+export default function initializeMovement(socket, io, playerId, players, currentGame) {
+    if (!currentGame.playerStates) currentGame.playerStates = new Map();
+
     // --- Multiplayer Character State ---
     socket.on("PlayerState", (payload) => {
         if (!payload || typeof payload !== "object") return;
+
+        const pid = players.get(playerId)?.playerId;
+        if (!pid) return;
+
+        // Store the authoritative-ish last state we received for this player.
+        // (If you later move Pac-Man movement fully server-side, this becomes server truth.)
+        currentGame.playerStates.set(pid, {
+            playerId: pid,
+            socketId: payload.socketId || socket.id,
+            x: payload.x,
+            y: payload.y,
+            tileX: payload.tileX,
+            tileY: payload.tileY,
+            dir: payload.dir,
+            nextDir: payload.nextDir,
+            seq: payload.seq ?? 0,
+            t: Date.now(),
+        });
+
         io.emit("PlayerState", {
             ...payload,
             socketId: payload.socketId || socket.id,
+            playerId: pid,
         });
     });
 

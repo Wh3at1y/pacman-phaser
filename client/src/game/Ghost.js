@@ -574,52 +574,52 @@ export default class Ghost {
     update(delta, pacTile, pacDir) {
         this.resetColorIfNeeded();
 
-        const TS = this.scene.TILE_SIZE;
+        // const TS = this.scene.TILE_SIZE;
 
         // Decide special house state first (may set dir + tile steps)
-        this._updateHouseState(delta);
+        // this._updateHouseState(delta);
 
-        const curSpeed = this.isFrightened() ? (this.baseSpeed * 0.6) : this.baseSpeed;
-        let remaining = (curSpeed * delta) / 1000;
-        const maxStep = TS / 4;
+        // const curSpeed = this.isFrightened() ? (this.baseSpeed * 0.6) : this.baseSpeed;
+        // let remaining = (curSpeed * delta) / 1000;
+        // const maxStep = TS / 4;
 
-        while (remaining > 0) {
-            const step = Math.min(maxStep, remaining);
+        // while (remaining > 0) {
+        //     const step = Math.min(maxStep, remaining);
+        //
+        //     // Only run normal AI when active
+        //     if (this.state === "active" && this.atTileCenter()) {
+        //         this.snapToCenter();
+        //
+        //         if (this.isFrightened()) {
+        //             this.dir = this.chooseDirAwayFrom(pacTile);
+        //         } else {
+        //             const target =
+        //                 this.mode === "scatter"
+        //                     ? this.scatterTarget
+        //                     : this.getChaseTarget(pacTile, pacDir);
+        //             this.dir = this.chooseDirToward(target);
+        //         }
+        //
+        //         const nextTX = this.wrapXTile(this.tileX + this.dir.x);
+        //         const nextTY = this.tileY + this.dir.y;
+        //         if (nextTY < 0 || nextTY >= this.scene.levelRows) break;
+        //         if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) break;
+        //
+        //         this.tileX = nextTX;
+        //         this.tileY = nextTY;
+        //     }
+        //
+        //     // Move pixel position
+        //     this.x += this.dir.x * step;
+        //     this.y += this.dir.y * step;
+        //
+        //     this.wrapXPixel();
+        //
+        //     remaining -= step;
+        // }
 
-            // Only run normal AI when active
-            if (this.state === "active" && this.atTileCenter()) {
-                this.snapToCenter();
-
-                if (this.isFrightened()) {
-                    this.dir = this.chooseDirAwayFrom(pacTile);
-                } else {
-                    const target =
-                        this.mode === "scatter"
-                            ? this.scatterTarget
-                            : this.getChaseTarget(pacTile, pacDir);
-                    this.dir = this.chooseDirToward(target);
-                }
-
-                const nextTX = this.wrapXTile(this.tileX + this.dir.x);
-                const nextTY = this.tileY + this.dir.y;
-                if (nextTY < 0 || nextTY >= this.scene.levelRows) break;
-                if (!this.canStep(this.tileX, this.tileY, nextTX, nextTY)) break;
-
-                this.tileX = nextTX;
-                this.tileY = nextTY;
-            }
-
-            // Move pixel position
-            this.x += this.dir.x * step;
-            this.y += this.dir.y * step;
-
-            this.wrapXPixel();
-
-            remaining -= step;
-        }
-
-        this.reconcileToGrid();
-        this.sprite.setPosition(this.x, this.y);
+        // this.reconcileToGrid();
+        // this.sprite.setPosition(this.x, this.y);
         this._drawGhost();
 
     }

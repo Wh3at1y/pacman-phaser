@@ -1,12 +1,13 @@
+// MainScene.js (DROP-IN REPLACEMENT)
+// Ghosts are server-authoritative: spawned + moved from GhostSnapshot.
+
 import Phaser from "phaser";
 import { level1 } from "../levels/level1";
-import Ghost from "../Ghost";
 import Player from "../Player";
 import socket from "../../socket.js";
 
 const TILE_SIZE = 24;
 
-// Up to 4 Pac-Men (same properties, different controls + spawn tiles)
 const MAX_PLAYERS = 4;
 const PACMAN_START_TILES = [
     { x: 13, y: 23 }, // P1
@@ -16,6 +17,14 @@ const PACMAN_START_TILES = [
 ];
 
 const colors = [0xffff00, 0x800080, 0xffffff, 0x008000];
+
+// Ghost colors match your previous setup :contentReference[oaicite:8]{index=8}
+const GHOST_COLORS = {
+    blinky: 0xff0000,
+    pinky: 0xffb8ff,
+    inky: 0x00ffff,
+    clyde: 0xffb852,
+};
 
 export default class MainScene extends Phaser.Scene {
     constructor(onHudUpdate, players, currentPlayer) {
@@ -39,46 +48,35 @@ export default class MainScene extends Phaser.Scene {
 
         this.cameras.main.setZoom(1);
 
-        // ---- GAME STATE ----
         this.isDying = false;
         this.isRoundActive = false;
 
         this.round = this.registry.get("round") ?? 1;
-        this.playerScores = {}
+        this.playerScores = {};
 
         this.registry.set("numPlayers", this.currentPlayers.length);
         this.numPlayers = Math.max(1, Math.min(MAX_PLAYERS, this.registry.get("numPlayers") ?? 1));
         this.registry.set("numPlayers", this.numPlayers);
-
         this.registry.set("round", this.round);
 
         this.dotsRemaining = 0;
         this.dotsCollected = 0;
 
-        // ---- DOTS ----
+        // DOTS
         this.dots = this.add.group();
-        this.dotMap = new Map(); // key: "x,y" -> dot
+        this.dotMap = new Map();
 
-        // ---- GHOST MODE STATE ----
-        this.ghostMode = "scatter";
-        this.ghostModeElapsed = 0;
-
-        // frightened state
-        this.frightenedUntil = 0;
-        this.frightenedMs = 7000;
-
-        // ---- AUDIO ----
+        // AUDIO
         this.roundStartSound = this.sound.add("roundStart", { volume: 0.1 });
         this.eatSound = this.sound.add("eatLoop", { loop: true, volume: 0.1 });
         this.deadSound = this.sound.add("dead", { volume: 0.1 });
         this.lastEatTime = -999999;
 
-        // ---- PLAYERS ----
+        // PLAYERS
         this.players = [];
         for (let i = 0; i < this.numPlayers; i++) {
             const startTile = PACMAN_START_TILES[i] ?? PACMAN_START_TILES[0];
 
-            // Only the local player gets keyboard controls
             let controls = null;
             if (this.currentPlayers[i]?.socketId === this.currentPlayer.socketId) {
                 controls = this.input.keyboard.createCursorKeys();
@@ -98,11 +96,92 @@ export default class MainScene extends Phaser.Scene {
             this.players.push(p);
         }
 
+        // SERVER GHOSTS (render-only on a client)
+        this.serverGhosts = new Map();     // ghostId -> latest snapshot
+        this.ghostSprites = new Map();     // ghostId -> Phaser GameObject
 
-        // ---- NETWORKING ----
-        // Key idea:
-        // - Send INPUT immediately (keydown) so intent is shared quickly.
-        // - Send STATE at ~20hz (50ms) so remote clients can interpolate smoothly.
+        // ---- Ghost interpolation buffer (same idea as Player remote interpolation) ----
+        this.ghostNet = new Map(); // ghostId -> { snaps: [{t,x,y,tileX,tileY,dir,nextDir,mode,state}], delayMs }
+        this.ghostInterpDelayMs = 110;
+
+
+        const ensureGhostSprite = (ghostId) => {
+            if (this.ghostSprites.has(ghostId)) return this.ghostSprites.get(ghostId);
+
+            const color = GHOST_COLORS[ghostId] ?? 0xffffff;
+            const sprite = this.add.circle(
+                0, 0,
+                TILE_SIZE / 2 - 2,
+                color
+            );
+            sprite.setDepth(1000);
+            this.ghostSprites.set(ghostId, sprite);
+            return sprite;
+        };
+
+        // const applyGhostVisual = (ghostId, g) => {
+        //     const spr = ensureGhostSprite(ghostId);
+        //     if (!g) return;
+        //
+        //     spr.x = g.x;
+        //     spr.y = g.y;
+        //
+        //     // Frightened visuals come from server "mode"
+        //     if (g.mode === "frightened") {
+        //         spr.setFillStyle(0x0000ff);
+        //     } else {
+        //         spr.setFillStyle(GHOST_COLORS[ghostId] ?? 0xffffff);
+        //     }
+        //
+        //     // Optional: hide ghosts that are "inHouse" until leaving, if you want
+        //     spr.setVisible(true);
+        // };
+
+        this._onGhostSnapshot = ({  ghosts }) => {
+            if (!ghosts || !Array.isArray(ghosts)) return;
+
+            // Use local clock for snapshots, like Player does
+            const localT = this.time.now;
+
+            for (const g of ghosts) {
+                if (!g?.ghostId) continue;
+
+                // Keep latest authoritative snapshot for collisions, etc.
+                this.serverGhosts.set(g.ghostId, g);
+
+                // Push into the interpolation buffer
+                let buf = this.ghostNet.get(g.ghostId);
+                if (!buf) {
+                    buf = { snaps: [], delayMs: this.ghostInterpDelayMs };
+                    this.ghostNet.set(g.ghostId, buf);
+                }
+
+                buf.snaps.push({
+                    t: localT,
+                    x: g.x,
+                    y: g.y,
+                    tileX: g.tileX,
+                    tileY: g.tileY,
+                    dir: g.dir,
+                    nextDir: g.nextDir,
+                    mode: g.mode,
+                    state: g.state,
+                });
+
+                // Keep the buffer small
+                if (buf.snaps.length > 12) buf.snaps.shift();
+
+                // Ensure sprite exists (but don't hard-set position here anymore)
+                ensureGhostSprite(g.ghostId);
+            }
+        };
+
+        this.socket.on("GhostSnapshot", this._onGhostSnapshot);
+
+        // Ask server for snapshot immediately on scene start (join-in-progress safety)
+        this.socket.emit("GhostSnapshotRequest");
+
+        // NETWORKING (players) - unchanged from your current logic
         this.inputSeq = 0;
         this.stateSeq = 0;
 
@@ -131,11 +210,10 @@ export default class MainScene extends Phaser.Scene {
             if (seq != null && seq <= p.lastInputSeq) return;
             if (seq != null) p.lastInputSeq = seq;
 
-            p.setNextDirection(dir); // ArrowUp etc
+            p.setNextDirection(dir);
         };
         this.socket.on("KeyPressed", this._onKeyPressed);
 
-        // State tick: send our *pixel* position too, so remote doesn't "teleport tile centers".
         this.netTick = this.time.addEvent({
             delay: 50,
             loop: true,
@@ -167,7 +245,6 @@ export default class MainScene extends Phaser.Scene {
             if (seq != null && seq <= p.lastStateSeq) return;
             if (seq != null) p.lastStateSeq = seq;
 
-            // Snapshot time is *local receive time* for consistent interpolation.
             p.pushNetSnapshot({
                 t: this.time.now,
                 x: typeof x === "number" ? x : tileX * TILE_SIZE + TILE_SIZE / 2,
@@ -180,28 +257,30 @@ export default class MainScene extends Phaser.Scene {
         };
         this.socket.on("PlayerState", this._onPlayerState);
 
+        // Cleanup
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
             this.input.keyboard.off("keydown", this._onKeyDown);
             this.socket.off("KeyPressed", this._onKeyPressed);
             this.socket.off("PlayerState", this._onPlayerState);
+            this.socket.off("GhostSnapshot", this._onGhostSnapshot);
+
             this.socket.off("DotEatenConfirmed");
             this.socket.off("BackToLobby");
             this.socket.off("RoundEnded");
             this.socket.off("LivesUpdate");
-            this.sound.stopAll()
-            this.eatSound.destroy()
-            this.deadSound.destroy()
-            this.roundStartSound.destroy()
+
+            this.sound.stopAll();
+            this.eatSound.destroy();
+            this.deadSound.destroy();
+            this.roundStartSound.destroy();
             this.netTick?.remove?.();
         });
 
-        this.socket.on("DotEatenConfirmed", ({ x, y, type, scores }) => {
+        // Dot confirmation + frightened event (visuals handled by ghost snapshots now)
+        this.socket.on("DotEatenConfirmed", ({ x, y, scores }) => {
             const key = this._dotKey(x, y);
-
-            // Clear pending request lock (so local can eat next dot)
             if (this._pendingDotRequests) this._pendingDotRequests.delete(key);
 
-            // Remove dot visually if still present
             const dot = this.dotMap.get(key);
             if (dot) {
                 dot.destroy();
@@ -209,21 +288,13 @@ export default class MainScene extends Phaser.Scene {
                 this.dotsRemaining--;
             }
 
-            // Frightened should start when server says power dot was eaten
-            if (type === "power") {
-                this.triggerFrightened(); // or triggerFrightened(durationMs) if you support it
-            }
-
-            // Update scores from authoritative snapshot
+            // Still keep your HUD scores
             if (scores) {
                 this.playerScores = scores;
-                this.onHudUpdate?.({
-                    playerScores: this.playerScores,
-                });
+                this.onHudUpdate?.({ playerScores: this.playerScores });
             }
 
             if (this.dotsRemaining <= 0) {
-                // prevent double-calls if multiple confirms arrive close together
                 if (!this._roundEnding) {
                     this._roundEnding = true;
                     this.endRound();
@@ -232,32 +303,22 @@ export default class MainScene extends Phaser.Scene {
             }
         });
 
-        this.livesByPlayerId = this.livesByPlayerId ?? {};
-        this.deathsByPlayerId = this.deathsByPlayerId ?? {};
-
         this.socket.on("LivesUpdate", ({ playerId, lives, eliminated }) => {
-
-            // Find the matching Player instance.
-            // IMPORTANT: your Player instances currently store socketId (not playerId). :contentReference[oaicite:5]{index=5}
-            // So you need to store playerId on Player when constructing it (next section).
-            console.log(this.players, playerId)
             const p = this.players.find(pl => pl.playerId === playerId);
             if (!p) return;
-            console.log('FOUND PLAYER', p)
+
             if (eliminated) {
                 p.setAlive(false);
                 p.outUntilRoundEnd = false;
                 p.eliminated = true;
                 p.setSpectatorVisual(true);
             } else {
-                // died but still has lives: out until round end
                 p.setAlive(false);
                 p.outUntilRoundEnd = true;
                 p.setSpectatorVisual(true);
             }
-            this.onHudUpdate?.({
-                lives: lives
-            });
+
+            this.onHudUpdate?.({ lives });
         });
 
         this.socket.on("RoundEnded", ({ respawn, round }) => {
@@ -271,31 +332,19 @@ export default class MainScene extends Phaser.Scene {
                 }
             }
 
-            // Start next round locally (or just call startRound if that's your pattern)
             this.startRound();
-            if(this.round < round) this.buildDotsFromLevel()
-            this.onHudUpdate({round})
+            if (this.round < round) this.buildDotsFromLevel();
+            this.onHudUpdate({ round });
         });
 
-
         this._onBackToLobby = () => {
-            // stop game loop cleanly
-            this.isRoundActive = false;
             this.isRoundActive = false;
             this.stopEatSound();
-
-            // tell React to switch screens/routes (best practice)
             this.onHudUpdate?.({ backToLobby: true });
-
-            // If you're NOT using React routing and want brute force:
-            // window.location.href = "/";  // or "/lobby"
         };
-
         this.socket.on("BackToLobby", this._onBackToLobby);
 
-
-
-        // ---- READY OVERLAY ----
+        // READY overlay
         this.readyOverlay = this.add
             .rectangle(
                 (this.levelCols * TILE_SIZE) / 2,
@@ -319,67 +368,11 @@ export default class MainScene extends Phaser.Scene {
             .setDepth(1001)
             .setVisible(false);
 
-        // ---- Build dot sprites from level ----
+        // Build dots + render level
         this.buildDotsFromLevel();
-
-        // ---- LEVEL RENDER ----
         this.drawLevel();
 
-        // ---- GHOST HOUSE REGION (optional hook) ----
-        this.buildGhostHouseRegion?.();
-
-        // ---- GHOSTS ----
-        this.ghosts = [
-            new Ghost(this, {
-                name: "blinky",
-                color: 0xff0000,
-                startTile: { x: 14, y: 11 },
-                scatterTarget: { x: this.levelCols - 2, y: 1 },
-                speed: 145,
-            }),
-            new Ghost(this, {
-                name: "pinky",
-                color: 0xffb8ff,
-                startTile: { x: 14, y: 14 },
-                scatterTarget: { x: 1, y: 1 },
-                speed: 145,
-            }),
-            new Ghost(this, {
-                name: "inky",
-                color: 0x00ffff,
-                startTile: { x: 12, y: 14 },
-                scatterTarget: { x: this.levelCols - 2, y: this.levelRows - 2 },
-                speed: 145,
-            }),
-            new Ghost(this, {
-                name: "clyde",
-                color: 0xffb852,
-                startTile: { x: 16, y: 14 },
-                scatterTarget: { x: 1, y: this.levelRows - 2 },
-                speed: 145,
-            }),
-        ];
-
-        // ---- GHOST HOUSE SETUP (release schedule) ----
-        const houseInfo = this._buildGhostHouseInfo();
-
-        const releaseByName = {
-            blinky: 1000,
-            pinky: 1500,
-            inky: 4500,
-            clyde: 7500,
-        };
-
-        for (const g of this.ghosts) {
-            g.configureHouse?.({
-                ...houseInfo,
-                releaseDelayMs: releaseByName[g.name] ?? 0,
-            });
-        }
-
-
-
-        // ---- HUD ----
+        // HUD init
         this.onHudUpdate?.({
             dotsCollected: this.dotsCollected,
             dotsRemaining: this.dotsRemaining,
@@ -390,112 +383,54 @@ export default class MainScene extends Phaser.Scene {
         this.startRound();
     }
 
-    /* ===============================
-       HELPERS
-    =============================== */
+    _applyGhostInterpolation() {
+        const renderTime = this.time.now - this.ghostInterpDelayMs;
+
+        for (const [ghostId, buf] of this.ghostNet.entries()) {
+            const spr = this.ghostSprites.get(ghostId);
+            if (!spr) continue;
+
+            const snaps = buf.snaps;
+            if (!snaps || snaps.length === 0) continue;
+
+            // Drop old snapshots
+            while (snaps.length >= 3 && snaps[1].t <= renderTime) snaps.shift();
+
+            // One snapshot: ease toward it
+            if (snaps.length === 1) {
+                const s = snaps[0];
+                const a = 1 - Math.pow(0.001, 1 / 60); // same smoothing idea as Player
+                spr.x += (s.x - spr.x) * a;
+                spr.y += (s.y - spr.y) * a;
+
+                // Visual mode (frightened)
+                if (s.mode === "frightened") spr.setFillStyle(0x0000ff);
+                else spr.setFillStyle(GHOST_COLORS[ghostId] ?? 0xffffff);
+
+                spr.setVisible(true);
+                continue;
+            }
+
+            const s0 = snaps[0];
+            const s1 = snaps[1];
+            const span = Math.max(1, s1.t - s0.t);
+            const alpha = Phaser.Math.Clamp((renderTime - s0.t) / span, 0, 1);
+
+            spr.x = Phaser.Math.Linear(s0.x, s1.x, alpha);
+            spr.y = Phaser.Math.Linear(s0.y, s1.y, alpha);
+
+            const use = alpha < 0.5 ? s0 : s1;
+            if (use.mode === "frightened") spr.setFillStyle(0x0000ff);
+            else spr.setFillStyle(GHOST_COLORS[ghostId] ?? 0xffffff);
+
+            spr.setVisible(true);
+        }
+    }
+
 
     getLocalPlayer() {
         return this.players.find((p) => p.socketId === this.currentPlayer.socketId) ?? this.players[0];
     }
-
-    isGhostHouseTile(x, y) {
-        return level1?.[y]?.[x] === "X";
-    }
-
-    _buildGhostHouseInfo() {
-        // Door tiles are the '~' tiles
-        const doorTiles = [];
-        let minHouseY = Infinity;
-        let maxHouseY = -Infinity;
-
-        for (let y = 0; y < this.levelRows; y++) {
-            for (let x = 0; x < this.levelCols; x++) {
-                const t = level1[y][x];
-                if (t === "~") doorTiles.push({ x, y });
-                if (t === "X") {
-                    minHouseY = Math.min(minHouseY, y);
-                    maxHouseY = Math.max(maxHouseY, y);
-                }
-            }
-        }
-
-        // Exit tile: just above the left door tile (works with your map)
-        // Doors are at (13,12) and (14,12) in your level. :contentReference[oaicite:2]{index=2}
-        const leftDoor = doorTiles.slice().sort((a, b) => a.x - b.x)[0];
-        const exitTile = leftDoor ? { x: leftDoor.x, y: leftDoor.y - 1 } : null;
-
-        return {
-            doorTiles,
-            exitTile,
-            inHouseMinY: minHouseY === Infinity ? null : minHouseY,
-            inHouseMaxY: maxHouseY === -Infinity ? null : maxHouseY,
-        };
-    }
-
-    // Ghost-specific passability rules.
-    // Ghost.js calls this as: isGhostPassable(fromX, fromY, toX, toY)
-    // - Wraps horizontally (tunnel)
-    // - Blocks solid walls
-    // - Gate tile(s) (~ or ~~): ghosts may EXIT but not ENTER
-    isGhostPassable(fromX, fromY, toX, toY) {
-        const cols = this.levelCols;
-        const rows = this.levelRows;
-
-        // vertical bounds are hard walls
-        if (toY < 0 || toY >= rows) return false;
-
-        // horizontal wrap (tunnel)
-        if (toX < 0) toX = cols - 1;
-        if (toX >= cols) toX = 0;
-
-        const tile = level1[toY]?.[toX];
-        if (!tile) return false;
-
-        // solid wall tiles
-        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
-        if (walls.includes(tile)) return false;
-
-        // ghost-house gate: allow exit (moving UP out of the house), block entry
-        if (tile === "~~" || tile === "~") {
-            // ✅ occupancy check: standing on the gate is OK
-            if (fromX === toX && fromY === toY) return true;
-
-            // crossing: only allow moving UP out of the house
-            return fromY > toY;
-        }
-
-        return true;
-    }
-
-    isPacmanPassable(toX, toY) {
-        const rows = level1.length;
-        const cols = level1[0].length;
-
-        if (toY < 0 || toY >= rows) return false;
-        if (toX < 0) toX = cols - 1;
-        if (toX >= cols) toX = 0;
-
-        const tile = level1[toY]?.[toX];
-        if (!tile) return false;
-
-        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
-
-        if (walls.includes(tile)) return false;
-        // Pac-Men cannot pass the ghost-house gate tiles
-        if (tile === "~~" || tile === "~") return false;
-
-        return true;
-    }
-
-    canMove(tileX, tileY, direction) {
-        const newX = tileX + direction.x;
-        const newY = tileY + direction.y;
-        return this.isPacmanPassable(newX, newY);
-    }
-
-    /* ===============================
-       DOTS / SCORE (FAST)
-    =============================== */
 
     _dotKey(x, y) {
         return `${x},${y}`;
@@ -531,8 +466,6 @@ export default class MainScene extends Phaser.Scene {
     collectDotAt(player) {
         if (!this.isRoundActive) return false;
         if (!player?.sprite) return false;
-
-        // Server-authoritative: only local player requests dot eats
         if (player.isRemote) return false;
 
         const x = player.tileX;
@@ -542,64 +475,40 @@ export default class MainScene extends Phaser.Scene {
         const dot = this.dotMap.get(key);
         if (!dot || !dot.active) return false;
 
-        // Only eat when at/near the center of the tile.
         const cx = x * TILE_SIZE + TILE_SIZE / 2;
         const cy = y * TILE_SIZE + TILE_SIZE / 2;
         const dist = Phaser.Math.Distance.Between(player.sprite.x, player.sprite.y, cx, cy);
         if (dist > TILE_SIZE * 0.2) return false;
 
-        // Determine dot type (whatever you stored on the dot)
         const type = dot.getData("type") || "normal";
 
-        // Prevent spamming repeated requests while sitting on the same dot.
-        // This gets cleared when DotEatenConfirmed comes back.
         this._pendingDotRequests ??= new Set();
         if (this._pendingDotRequests.has(key)) return false;
         this._pendingDotRequests.add(key);
 
-        // Optional sequencing to help ignore stale/duplicate server messages
         this.dotSeq = (this.dotSeq ?? 0) + 1;
 
-        // Do NOT destroy dot or update score locally (server authoritative)
         this.socket.emit("DotEaten", {
-            playerId: this.currentPlayer.playerId, // stable identity
-            x,
-            y,
-            type,
+            playerId: this.currentPlayer.playerId,
+            x, y, type,
             seq: this.dotSeq,
             t: this.time.now,
         });
 
-        // Optional: mark “ate recently” for chomping sound/animation only
         this.lastEatTime = this.time.now;
-
         return true;
     }
-
-    /* ===============================
-       ROUND FLOW
-    =============================== */
 
     startRound() {
         this.isRoundActive = false;
 
         this.readyOverlay.setVisible(true);
         this.readyText.setVisible(true);
-        console.log(this.roundStartSound)
-        this.roundStartSound && this.roundStartSound?.play();
+        this.roundStartSound?.play();
 
-        // Reset all players to start tiles (keep dots as-is on death; round start keeps current map dots too)
         for (let i = 0; i < this.players.length; i++) {
             this.players[i].reset(PACMAN_START_TILES[i] ?? PACMAN_START_TILES[0]);
         }
-
-        // reset frightened / modes
-        this.frightenedUntil = 0;
-        this.ghostMode = "scatter";
-        this.ghostModeElapsed = 0;
-
-        // reset ghosts
-        for (const g of this.ghosts) g.reset?.();
 
         this.time.delayedCall(700, () => {
             this.readyOverlay.setVisible(false);
@@ -611,48 +520,8 @@ export default class MainScene extends Phaser.Scene {
     endRound() {
         this.stopEatSound();
         this.isRoundActive = false;
-
-        // tell server to broadcast respawn list
         this.socket.emit("RoundEnded");
-
-        // If you want dots to reset each round, keep buildDotsFromLevel().
-        // If you want dots to persist across rounds, remove it.
-        // this.buildDotsFromLevel();
-
-        // do NOT immediately startRound here; wait for server RoundEnded
     }
-
-
-    /* ===============================
-       FRIGHTENED MODE
-    =============================== */
-
-    triggerFrightened() {
-        const pac = this.getLocalPlayer?.() || this.players.find(p => !p.isRemote);
-        const pacTile = pac ? { x: pac.tileX, y: pac.tileY } : null;
-
-        for (const g of this.ghosts) {
-            g.setFrightened(6000, pacTile,0); // 2 = near radius in tiles
-        }
-    }
-
-    updateGhostMode(delta) {
-        if (this.time.now < this.frightenedUntil) return;
-
-        this.ghostModeElapsed += delta;
-
-        if (this.ghostMode === "scatter" && this.ghostModeElapsed > 7000) {
-            this.ghostMode = "chase";
-            this.ghostModeElapsed = 0;
-        } else if (this.ghostMode === "chase" && this.ghostModeElapsed > 20000) {
-            this.ghostMode = "scatter";
-            this.ghostModeElapsed = 0;
-        }
-    }
-
-    /* ===============================
-       AUDIO
-    =============================== */
 
     stopEatSound() {
         if (!this.eatSound) return;
@@ -660,104 +529,68 @@ export default class MainScene extends Phaser.Scene {
         if (this.eatSound.isPaused) this.eatSound.stop();
     }
 
-    /* ===============================
-       COLLISION (PACMAN vs GHOST)
-    =============================== */
-
     checkGhostCollision() {
-        // Only the local player can die from local ghosts.
         const player = this.getLocalPlayer?.() || this.players.find(p => !p.isRemote);
         if (!player || !player.isAlive || player.outUntilRoundEnd || player.eliminated) return null;
 
-        for (const ghost of this.ghosts) {
-            if (!ghost?.sprite || !ghost.sprite.active) continue;
+        for (const [ghostId, g] of this.serverGhosts.entries()) {
+            const spr = this.ghostSprites.get(ghostId);
+            if (!spr || !spr.visible) continue;
 
-            const d = Phaser.Math.Distance.Between(
-                player.sprite.x, player.sprite.y,
-                ghost.sprite.x, ghost.sprite.y
-            );
-
-            // Use whatever radius you already had
+            const d = Phaser.Math.Distance.Between(player.sprite.x, player.sprite.y, spr.x, spr.y);
             if (d < this.TILE_SIZE * 0.6) {
-                return { ghost, player };
+                return { ghostId, ghost: g, player };
             }
         }
 
         return null;
     }
 
-
-    eatGhost(ghost) {
-        if (!ghost) return;
-
-        this.score += 200;
-        this.registry.set("score", this.score);
-        this.onHudUpdate?.({
-            score: this.score,
-            dotsCollected: this.dotsCollected,
-            dotsRemaining: this.dotsRemaining,
-            round: this.round,
-            numPlayers: this.numPlayers,
-        });
-
-        ghost.onEaten?.();
-    }
-
-    areAllPlayersOut() {
-        return this.players.every(p => !p.isAlive || p.outUntilRoundEnd);
-    }
-
     killPlayer(player) {
         if (!player) return;
-
-        // Prevent repeated kills while overlapping a ghost
         if (!player.isAlive) return;
 
-        // Mark ONLY this player as out for the round
         player.setAlive(false);
         player.outUntilRoundEnd = true;
         player.setSpectatorVisual(true);
 
-        // Only tell the server if THIS client owns the victim
         if (!player.isRemote) {
             this.stopEatSound();
             this.deadSound?.play();
-
-            // IMPORTANT: emit the victim's playerId, not currentPlayer's
             this.socket.emit("PlayerDied", { victimPlayerId: player.playerId });
         }
 
-        // End the round ONLY if everyone is out
-        if (this.areAllPlayersOut()) {
+        if (this.players.every(p => !p.isAlive || p.outUntilRoundEnd)) {
             this.endRound();
         }
     }
 
-    getNearestPlayerForGhost(ghost) {
-        let best = null;
-        let bestD2 = Infinity;
+    isPacmanPassable(toX, toY) {
+        const rows = level1.length;
+        const cols = level1[0].length;
 
-        for (const p of this.players) {
-            if (!p?.sprite) continue;
-            if (!p.isAlive || p.outUntilRoundEnd || p.eliminated) continue;
+        if (toY < 0 || toY >= rows) return false;
+        if (toX < 0) toX = cols - 1;
+        if (toX >= cols) toX = 0;
 
-            const dx = p.sprite.x - ghost.sprite.x;
-            const dy = p.sprite.y - ghost.sprite.y;
-            const d2 = dx * dx + dy * dy;
+        const tile = level1[toY]?.[toX];
+        if (!tile) return false;
 
-            if (d2 < bestD2) {
-                bestD2 = d2;
-                best = p;
-            }
-        }
+        const walls = ["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"];
 
-        return best ?? this.getLocalPlayer();
+        if (walls.includes(tile)) return false;
+
+        // Pac-Man cannot pass the ghost-house gate tiles
+        if (tile === "~~" || tile === "~") return false;
+
+        return true;
     }
 
-
-    /* ===============================
-       UPDATE
-    =============================== */
+    canMove(tileX, tileY, direction) {
+        const newX = tileX + direction.x;
+        const newY = tileY + direction.y;
+        return this.isPacmanPassable(newX, newY);
+    }
 
     update(time, delta) {
         if (!this.isRoundActive || this.isDying) {
@@ -766,7 +599,7 @@ export default class MainScene extends Phaser.Scene {
             return;
         }
 
-        // ---- PLAYERS ----
+        // PLAYERS
         let anyMoved = false;
         const movedFlags = new Array(this.players.length).fill(false);
 
@@ -776,7 +609,7 @@ export default class MainScene extends Phaser.Scene {
             if (moved) anyMoved = true;
         }
 
-        // ---- EAT SOUND RULE: only when ANY player is moving + recently ate ----
+        // Eating sound
         const eatingRecently = this.time.now - this.lastEatTime < 140;
         if (anyMoved && eatingRecently) {
             if (this.eatSound.isPaused) this.eatSound.resume();
@@ -785,35 +618,25 @@ export default class MainScene extends Phaser.Scene {
             this.stopEatSound();
         }
 
-        // ---- GHOSTS ----
-        this.updateGhostMode(delta);
-
-        for (const g of this.ghosts) {
-            g.setMode?.(this.ghostMode);
-
-            const targetPlayer = this.getNearestPlayerForGhost(g);
-            const pacTile = targetPlayer.getTile();
-            const pacDir = targetPlayer.getDirection?.();
-
-            g.update?.(delta, pacTile, pacDir);
-        }
-
-        // ---- COLLISION ----
+        // COLLISION (based on server ghost positions)
+        this._applyGhostInterpolation();
         const hit = this.checkGhostCollision();
         if (hit) {
             const { ghost, player } = hit;
 
-            // Only local deaths should be processed and emitted
+            // For now, we still only handle death locally and emit PlayerDied,
+            // until we move collision to server.
             if (player.isRemote) return;
 
-            if (ghost.isFrightened?.()) {
-                this.eatGhost(ghost);
+            if (ghost?.mode === "frightened") {
+                // Eating ghosts will become server-authoritative later.
+                // For now: just ignore (or you can add a "GhostEaten" event later).
             } else {
                 this.killPlayer(player);
             }
         }
 
-        // ---- VISUALS ----
+        // VISUALS
         for (let i = 0; i < this.players.length; i++) {
             this.players[i].render(movedFlags[i]);
         }
@@ -829,59 +652,30 @@ export default class MainScene extends Phaser.Scene {
                 const baseX = col * TILE;
                 const baseY = row * TILE;
 
-                // Thick outer walls
                 const thick = 4;
-                // Thin inner maze walls
                 const thin = 2;
 
                 switch (tile) {
-                    // ---- THIN CORNERS ----
                     case "┌":
                         graphics.lineStyle(thin, 0x0000ff, 1);
-                        // middle bottom → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle right
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2));
                         break;
                     case "┐":
                         graphics.lineStyle(thin, 0x0000ff, 1);
-                        // middle bottom → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle left
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2));
                         break;
                     case "└":
                         graphics.lineStyle(thin, 0x0000ff, 1);
-                        // middle top → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle right
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2));
                         break;
                     case "┘":
                         graphics.lineStyle(thin, 0x0000ff, 1);
-                        // middle top → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle left
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2));
                         break;
-
-                    // ---- THIN HORIZONTAL & VERTICAL ----
                     case "-":
                         graphics.lineStyle(thin, 0x0000ff, 1);
                         graphics.strokeLineShape(new Phaser.Geom.Line(baseX, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2));
@@ -891,53 +685,25 @@ export default class MainScene extends Phaser.Scene {
                         graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE));
                         break;
 
-                    // ---- THICK OUTER WALLS ----
-                    case "╔": // top-left thick corner
+                    case "╔":
                         graphics.lineStyle(thick, 0x0000ff, 1);
-                        // middle bottom → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle right
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2));
                         break;
-
-                    case "╗": // top-right thick corner
+                    case "╗":
                         graphics.lineStyle(thick, 0x0000ff, 1);
-                        // middle bottom → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle left
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2));
                         break;
-
-                    case "╚": // bottom-left thick corner
+                    case "╚":
                         graphics.lineStyle(thick, 0x0000ff, 1);
-                        // middle top → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle right
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2));
                         break;
-
-                    case "╝": // bottom-right thick corner
+                    case "╝":
                         graphics.lineStyle(thick, 0x0000ff, 1);
-                        // middle top → center
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2)
-                        );
-                        // center → middle left
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY, baseX + TILE / 2, baseY + TILE / 2));
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX + TILE / 2, baseY + TILE / 2, baseX, baseY + TILE / 2));
                         break;
 
                     case "═":
@@ -951,13 +717,9 @@ export default class MainScene extends Phaser.Scene {
 
                     case "~":
                         graphics.lineStyle(2, 0xffffff, 1);
-                        graphics.strokeLineShape(
-                            new Phaser.Geom.Line(baseX, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2)
-                        );
+                        graphics.strokeLineShape(new Phaser.Geom.Line(baseX, baseY + TILE / 2, baseX + TILE, baseY + TILE / 2));
                         break;
 
-                    // ---- EMPTY ----
-                    case " ":
                     default:
                         break;
                 }

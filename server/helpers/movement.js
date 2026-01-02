@@ -2,7 +2,6 @@ export default function initializeMovement(socket, io, playerId, players) {
     // --- Multiplayer Character State ---
     socket.on("PlayerState", (payload) => {
         if (!payload || typeof payload !== "object") return;
-
         io.emit("PlayerState", {
             ...payload,
             socketId: payload.socketId || socket.id,

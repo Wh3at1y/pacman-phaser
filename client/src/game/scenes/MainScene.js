@@ -113,6 +113,7 @@ export default class MainScene extends Phaser.Scene {
             if (!isArrow) return;
 
             this.socket.emit("KeyPressed", {
+                playerId: this.currentPlayer.playerId,
                 socketId: this.currentPlayer.socketId,
                 dir: code,
                 seq: ++this.inputSeq,
@@ -121,10 +122,10 @@ export default class MainScene extends Phaser.Scene {
 
         this.input.keyboard.on("keydown", this._onKeyDown);
 
-        this._onKeyPressed = ({ socketId, dir, seq }) => {
-            if (socketId === this.currentPlayer.socketId) return;
+        this._onKeyPressed = ({ playerId, socketId, dir, seq }) => {
+            if ((playerId && playerId === this.currentPlayer.playerId) || (socketId && socketId === this.currentPlayer.socketId)) return;
 
-            const p = this.players.find((pl) => pl.socketId === socketId);
+            const p = this.players.find((pl) => (playerId && pl.playerId === playerId) || (socketId && pl.socketId === socketId));
             if (!p) return;
 
             p.lastInputSeq = p.lastInputSeq ?? 0;
@@ -144,6 +145,7 @@ export default class MainScene extends Phaser.Scene {
                 if (!p) return;
 
                 this.socket.emit("PlayerState", {
+                    playerId: p.playerId,
                     socketId: p.socketId,
                     x: p.sprite.x,
                     y: p.sprite.y,
@@ -157,10 +159,10 @@ export default class MainScene extends Phaser.Scene {
         });
 
         this._onPlayerState = (state) => {
-            const { socketId, x, y, tileX, tileY, dir, nextDir, seq } = state ?? {};
-            if (!socketId || socketId === this.currentPlayer.socketId) return;
+            const { playerId, socketId, x, y, tileX, tileY, dir, nextDir, seq } = state ?? {};
+            if ((playerId && playerId === this.currentPlayer.playerId) || (!playerId && socketId === this.currentPlayer.socketId)) return;
 
-            const p = this.players.find((pl) => pl.socketId === socketId);
+            const p = this.players.find((pl) => (playerId && pl.playerId === playerId) || (!playerId && pl.socketId === socketId));
             if (!p) return;
 
             p.lastStateSeq = p.lastStateSeq ?? 0;

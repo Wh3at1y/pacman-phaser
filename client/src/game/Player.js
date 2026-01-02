@@ -13,7 +13,7 @@ export default class Player {
 
         const {
             startTile,
-            speed = 150,
+            speed = 160,
             radius = scene.TILE_SIZE * 0.7,
             controls = null,
             socketId,
@@ -239,27 +239,15 @@ export default class Player {
     setAlive(alive) {
         this.isAlive = alive;
 
-        // Disable physics while dead so you can't collide/eat dots accidentally
+        // Hide/show the rendered Pac-Man (graphics). The physics circle can stay, but disable body when dead.
         if (this.sprite?.body) {
-            this.sprite.body.enable = alive;
+            this.sprite.body.enable = !!alive;
         }
-
-        // Your Pac-Man visuals are the Graphics, not the sprite.
         if (this.graphics) {
-            this.graphics.setVisible(alive);
-            if (!alive) this.graphics.clear(); // fully remove the body/mouth when dead
-        }
-
-        // Reset mouth state on respawn so you don't come back as a weird blob
-        if (alive) {
-            this.mouthAngle = 0.15;
-            this.mouthOpening = true;
-            this.setSpectatorVisual(false);
-
-            // Force a redraw immediately (so you don't wait a frame and see "nothing")
-            this.draw();
+            this.graphics.setVisible(!!alive);
         }
     }
+
 
     setSpectatorVisual(isSpectator) {
         if (!this.graphics) return;

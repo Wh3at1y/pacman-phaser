@@ -19,8 +19,8 @@ export default function Lobby() {
             setIsConnecting(false);
         };
 
-        const onJoined = (playersMap) => {
-            setPlayers(Object.values(playersMap));
+        const onJoined = ({players: allPlayers}) => {
+            setPlayers(allPlayers)
         };
 
         const startGame = () => {
@@ -28,13 +28,13 @@ export default function Lobby() {
         }
 
         socket.on("connect", onConnect);
-        socket.on("joined", onJoined);
+        socket.on("lobby_state", onJoined);
         socket.on("startGame", startGame);
         socket.on("kicked", () => socket.disconnect());
 
         return () => {
             socket.off("connect", onConnect);
-            socket.off("joined", onJoined);
+            socket.off("lobby_state", onJoined);
             socket.disconnect();
         };
     }, []);

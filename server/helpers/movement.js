@@ -1,48 +1,56 @@
-export default function initializeMovement(socket, io, playerId, players, playerState) {
+// server/helpers/movement.js
+// Keeps multiplayer player movement consistent by relaying input + state.
+// Player movement is still simulated client-side (prediction) for 60fps;
+// the server stores the latest state and rebroadcasts it for everyone else.
 
-    // --- Multiplayer Character State ---
+export default function initializeMovement(socket, io, authedPlayerId, players, playerState) {
+    // playerState: Map<playerId, latestState>
+    const stateMap = playerState ?? new Map();
+
+    // Client sends periodic authoritative state snapshots (50-100ms).
     socket.on("PlayerState", (payload) => {
         if (!payload || typeof payload !== "object") return;
 
-        const socketId = payload.socketId || socket.id;
+        const playerId = String(payload.playerId || authedPlayerId || "");
+        if (!playerId) return;
 
-        // ✅ store authoritative state for server-side systems (ghost sim)
-        // expected: x,y,tileX,tileY,dir,nextDir,isAlive/outUntilRoundEnd/etc
-        const pid = players.get(playerId)?.playerId;
-        if (pid) {
-            playerState.set(pid, {
-                ...payload,
-                socketId,
-                playerId: pid,
-                t: payload.t ?? Date.now(),
-            });
-        }
+        // Don't let a client spoof another player
+        if (authedPlayerId && playerId !== String(authedPlayerId)) return;
 
-        // existing broadcast
-        io.emit("PlayerState", {
-            ...payload,
-            socketId,
-        });
+        const seq = Number.isFinite(payload.seq) ? payload.seq : 0;
+
+        const prev = stateMap.get(playerId);
+        const prevSeq = prev?.seq ?? -1;
+        if (seq <= prevSeq) return;
+
+        const pkt = {
+            playerId,
+            socketId: socket.id,
+            x: payload.x,
+            y: payload.y,
+            tileX: payload.tileX,
+            tileY: payload.tileY,
+            dir: payload.dir,
+            nextDir: payload.nextDir,
+            seq,
+            t: Date.now(),
+        };
+
+        stateMap.set(playerId, pkt);
+
+        // Broadcast to others (sender already has it locally)
+        socket.broadcast.emit("PlayerState", pkt);
     });
 
+    // Optional: relay input events too (useful for debugging/animation sync)
+    socket.on("KeyPressed", (payload) => {
+        if (!payload || typeof payload !== "object") return;
 
-    // --- Multiplayer movement input ---
-    socket.on("KeyPressed", (arg1, arg2) => {
-        let socketId;
-        let dir;
-        let seq = 0;
-        let t = Date.now();
+        const playerId = String(payload.playerId || authedPlayerId || "");
+        if (!playerId) return;
+        if (authedPlayerId && playerId !== String(authedPlayerId)) return;
 
-        if (typeof arg1 === "object" && arg1 !== null) {
-            socketId = arg1.socketId || socket.id;
-            dir = arg1.dir;
-            seq = arg1.seq ?? 0;
-            t = arg1.t ?? Date.now();
-        } else {
-            dir = arg1;
-            socketId = arg2 || socket.id;
-        }
-
+        const dir = payload.dir;
         if (
             dir !== "ArrowUp" &&
             dir !== "ArrowDown" &&
@@ -53,11 +61,11 @@ export default function initializeMovement(socket, io, playerId, players, player
         }
 
         io.emit("KeyPressed", {
-            socketId,
+            playerId,
+            socketId: socket.id,
             dir,
-            seq,
-            t,
-            playerId: players.get(playerId)?.playerId,
+            seq: Number.isFinite(payload.seq) ? payload.seq : 0,
+            t: Date.now(),
         });
     });
 }

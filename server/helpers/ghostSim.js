@@ -105,10 +105,19 @@ export default class GhostSim {
     }
 
     wrapXPixel() {
+        // Horizontal tunnel wrap
+
         const TS = this.world.TILE_SIZE;
         const mapW = this.world.levelCols * TS;
         if (this.x < -TS / 2) this.x = mapW + TS / 2;
         else if (this.x > mapW + TS / 2) this.x = -TS / 2;
+    }
+
+    clampYPixel() {
+        const TS = this.world.TILE_SIZE;
+        const mapH = this.world.levelRows * TS;
+        if (this.y < TS / 2) this.y = TS / 2;
+        else if (this.y > mapH - TS / 2) this.y = mapH - TS / 2;
     }
 
     canStep(fromX, fromY, toX, toY) {
@@ -324,6 +333,7 @@ export default class GhostSim {
         const maxStep = TS / 4;
 
         while (remaining > 0) {
+
             const step = Math.min(maxStep, remaining);
 
             if (this.state === "active" && this.atTileCenter()) {
@@ -353,6 +363,22 @@ export default class GhostSim {
 
             remaining -= step;
         }
+
+        // Keep inside bounds and on-grid even if speed/frightened changes cause drift.
+        this.wrapXPixel();
+        this.clampYPixel();
+
+        // Soft recover if we somehow end up in a wall tile.
+        const cols = this.world.levelCols;
+        const rows = this.world.levelRows;
+        const pxTileX = ((Math.floor(this.x / TS) % cols) + cols) % cols;
+        const pxTileY = Math.max(0, Math.min(rows - 1, Math.floor(this.y / TS)));
+        if (!this.world.isGhostPassable(pxTileX, pxTileY, pxTileX, pxTileY)) {
+            this.tileX = pxTileX;
+            this.tileY = pxTileY;
+            this.snapToNearestPassable();
+            this.snapToCenter();
+        }
     }
 
     snapshot() {
@@ -368,4 +394,45 @@ export default class GhostSim {
             frightenedUntil: this.frightenedUntil,
         };
     }
+
+    snapToNearestPassable(maxRadius = 8) {
+        const ok = (tx, ty) => {
+            // use full signature for consistency with your passability function
+            return this.world.isGhostPassable(tx, ty, tx, ty);
+        };
+
+        // If current tile is fine, just snap pixels to the center and leave.
+        if (ok(this.tileX, this.tileY)) {
+            this.snapToCenter?.();
+            return true;
+        }
+
+        // Search outward in a square radius around current tile.
+        for (let r = 1; r <= maxRadius; r++) {
+            for (let dy = -r; dy <= r; dy++) {
+                const ty = this.tileY + dy;
+                if (ty < 0 || ty >= this.world.levelRows) continue;
+
+                for (let dx = -r; dx <= r; dx++) {
+                    const tx = this.wrapXTile(this.tileX + dx);
+
+                    if (!ok(tx, ty)) continue;
+
+                    // Found a safe tile. Snap ghost there.
+                    this.tileX = tx;
+                    this.tileY = ty;
+
+                    const TS = this.world.TILE_SIZE;
+                    this.x = tx * TS + TS / 2;
+                    this.y = ty * TS + TS / 2;
+
+                    return true;
+                }
+            }
+        }
+
+        // No safe tile found within radius. Don’t move.
+        return false;
+    }
+
 }

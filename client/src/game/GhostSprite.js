@@ -64,10 +64,36 @@ export default class GhostSprite {
 
         // Colors
         const frightened = this.mode === "frightened";
-        const bodyColor = frightened ? 0x0000ff : this.color;
-        const eyeWhite = 0xffffff;
-        const pupilColor = frightened ? 0xffffff : 0x0000ff;
 
+        // Classic: frightened is blue, then flashes blue/white faster and faster near the end.
+        // We drive the timing off MainScene.frightenedUntilMs, set from the server "FrightenedStart" event.
+        let bodyColor = frightened ? 0x0000ff : this.color;
+        const eyeWhite = 0xffffff;
+        let pupilColor = frightened ? 0xffffff : 0x0000ff;
+
+        if (frightened && this.scene?.time && typeof this.scene.frightenedUntilMs === "number") {
+            const remaining = this.scene.frightenedUntilMs - this.scene.time.now;
+
+            // Start flashing in the last ~2.5s
+            if (remaining <= 2500) {
+                // Accelerating period as time runs out (clamped).
+                const period = Phaser.Math.Clamp(remaining / 6, 60, 220); // ms
+                const phase = Math.floor((2500 - Math.max(0, remaining)) / period) % 2;
+
+                // phase 0 = blue, phase 1 = white
+                if (phase === 1) {
+                    bodyColor = 0xffffff;
+                    pupilColor = 0xff0000; // classic red pupils during the flash
+                } else {
+                    bodyColor = 0x0000ff;
+                    pupilColor = 0xffffff;
+                }
+            } else {
+                // solid frightened blue earlier
+                bodyColor = 0x0000ff;
+                pupilColor = 0xffffff;
+            }
+        }
         this.gfx.clear();
 
         // ---- BODY ----

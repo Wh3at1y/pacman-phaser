@@ -52,6 +52,12 @@ export default class MainScene extends Phaser.Scene {
     this.isDying = false;
     this.isRoundActive = false;
 
+    // Client-side safety: brief optimistic frightened window after eating a power dot
+    // so latency doesn't let a 'chase' snapshot kill you.
+    this.localFrightenedUntilMs = 0;
+    // Server-synced frightened window (for flashing + for remote power dots)
+    this.frightenedUntilMs = 0;
+
     this.round = this.registry.get("round") ?? 1;
     this.playerScores = {};
 
@@ -136,11 +142,21 @@ export default class MainScene extends Phaser.Scene {
       if (!Array.isArray(ghosts)) return;
 
       const localT = this.time.now;
+      // Keep a global frightened-until for GhostSprite flashing (and as a fallback if we miss the event)
+      let maxFrightenedUntil = 0;
 
       for (const g of ghosts) {
         if (!g?.ghostId) continue;
 
         this.serverGhosts.set(g.ghostId, g);
+          const toSceneUntil = (serverUntilMs) => {
+              const remaining = Math.max(0, serverUntilMs - Date.now());
+              return this.time.now + remaining;
+          };
+
+          if (typeof g.frightenedUntilMs === "number") {
+              maxFrightenedUntil = Math.max(maxFrightenedUntil, toSceneUntil(g.frightenedUntilMs));
+          }
 
         let buf = this.ghostNet.get(g.ghostId);
         if (!buf) {
@@ -160,8 +176,11 @@ export default class MainScene extends Phaser.Scene {
         if (buf.snaps.length > 12) buf.snaps.shift();
 
         ensureGhostSprite(g.ghostId);
-      }
-    };
+       }
+
+       // If any ghost is frightened, this is the common until time.
+       if (maxFrightenedUntil > 0) this.frightenedUntilMs = maxFrightenedUntil;
+     };
 
     this.socket.on("GhostSnapshot", this._onGhostSnapshot);
     this.socket.emit("GhostSnapshotRequest");
@@ -244,9 +263,20 @@ export default class MainScene extends Phaser.Scene {
     // DOT confirm
     this.socket.on("DotEatenConfirmed", ({ x, y, scores }) => {
       const key = this._dotKey(x, y);
+
+      // Was this confirmation for a dot we (this client) requested? (prevents remote dots from affecting us)
+      const wasPendingLocal = this._pendingDotRequests.has(key);
       this._pendingDotRequests.delete(key);
 
       const dot = this.dotMap.get(key);
+      const dotType = dot?.getData?.("type") || "normal";
+
+      // If we just ate a POWER dot locally, open an optimistic frightened window to cover network delay.
+      if (wasPendingLocal && dotType === "power") {
+        // Match your server frightened duration. If you change it server-side, update this too.
+        this.localFrightenedUntilMs = this.time.now + 7000;
+      }
+
       if (dot) {
         dot.destroy();
         this.dotMap.delete(key);
@@ -267,7 +297,28 @@ export default class MainScene extends Phaser.Scene {
       }
     });
 
-    this.socket.on("LivesUpdate", ({ playerId, lives, eliminated }) => {
+
+
+    // POWER DOT / FRIGHTENED: server broadcast so everyone gets the timing (for flashing + latency safety)
+    this._onFrightenedStart = ({ untilMs, durationMs } = {}) => {
+        // Convert server epoch ms to Phaser scene-time ms
+        const toSceneUntil = (serverUntilMs) => {
+            // remaining time from now (epoch), applied onto Phaser clock
+            const remaining = Math.max(0, serverUntilMs - Date.now());
+            return this.time.now + remaining;
+        };
+
+        const u = (typeof untilMs === "number")
+            ? toSceneUntil(untilMs)
+            : (this.time.now + (durationMs ?? 7000));
+
+        this.frightenedUntilMs = Math.max(this.frightenedUntilMs || 0, u);
+        this.localFrightenedUntilMs = Math.max(this.localFrightenedUntilMs || 0, u);
+
+    };
+    this.socket.on("FrightenedStart", this._onFrightenedStart);
+
+this.socket.on("LivesUpdate", ({ playerId, lives, eliminated }) => {
       const p = this.players.find((pl) => pl.playerId === playerId);
       if (!p) return;
 
@@ -357,6 +408,7 @@ export default class MainScene extends Phaser.Scene {
       this.socket.off("PlayerState", this._onPlayerState);
       this.socket.off("GhostSnapshot", this._onGhostSnapshot);
       this.socket.off("DotEatenConfirmed");
+      this.socket.off("FrightenedStart", this._onFrightenedStart);
       this.socket.off("BackToLobby", this._onBackToLobby);
       this.socket.off("RoundEnded");
       this.socket.off("LivesUpdate");
@@ -609,13 +661,34 @@ export default class MainScene extends Phaser.Scene {
 
     this._applyGhostInterpolation();
 
-    const hit = this.checkGhostCollision();
-    if (hit) {
-      const { ghost, player } = hit;
-      if (!player.isRemote && ghost?.mode !== "frightened") this.killPlayer(player);
-    }
+        const hit = this.checkGhostCollision();
+        if (hit) {
+            const { ghost, player } = hit;
 
-    for (let i = 0; i < this.players.length; i++) {
+            if (!player.isRemote) {
+                // ✅ IMPORTANT: ghosts in the house (or leaving) should NOT interact with Pac-Man at all.
+                // This prevents "ghost in box makes me invincible for 7s" and also prevents dying to box ghosts.
+                console.log("Ghost collision with Pac-Man!", ghost, player);
+                if (ghost?.state !== "active") {
+                    // ignore collisions with inHouse/leaving ghosts entirely
+                    return;
+                }
+
+                // ✅ Only apply the optimistic local frightened window to ACTIVE ghosts
+                const locallyFrightened =
+                    ghost?.state === "frightened" && this.time.now < (this.localFrightenedUntilMs || 0);
+                console.log(locallyFrightened)
+                const isFrightened = ghost?.mode === "frightened" || locallyFrightened;
+
+                // If not frightened, you die (like nature intended)
+                if (!isFrightened) {
+                    this.killPlayer(player);
+                }
+            }
+        }
+
+
+        for (let i = 0; i < this.players.length; i++) {
       this.players[i].render(movedFlags[i]);
     }
   }

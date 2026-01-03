@@ -62,6 +62,17 @@ const GHOST_SPAWNS = {
     clyde: { tileX: 16, tileY: 14, dir: { x: 0, y: -1 } },
 };
 
+const EATEN_RESPAWNS = {
+    // When a frightened ghost is eaten, it returns to the house (box), not its round-1 spawn.
+    blinky: { tileX: 14, tileY: 14, dir: { x: 0, y: -1 } },
+    pinky:  { tileX: 14, tileY: 14, dir: { x: 0, y: -1 } },
+    inky:   { tileX: 12, tileY: 14, dir: { x: 0, y: -1 } },
+    clyde:  { tileX: 16, tileY: 14, dir: { x: 0, y: -1 } },
+};
+
+const GHOST_EAT_WAIT_MS = 1000;
+const GHOST_COLLIDE_RADIUS_PX = TILE_SIZE * 0.60;
+
 const RELEASE_BY_NAME_MS = {
     blinky: 1000,
     pinky: 1500,
@@ -323,6 +334,82 @@ function chooseRandom(validDirs) {
     return validDirs[Math.floor(r * validDirs.length)];
 }
 
+
+// -----------------------------------------
+// Ghost-vs-player collision (server-authoritative for frightened eats)
+// -----------------------------------------
+function getPlayerPosPx(p) {
+    if (!p) return null;
+    if (Number.isFinite(p.x) && Number.isFinite(p.y)) return { x: p.x, y: p.y };
+    if (Number.isFinite(p.tileX) && Number.isFinite(p.tileY)) {
+        return { x: tileCenterX(p.tileX), y: tileCenterY(p.tileY) };
+    }
+    return null;
+}
+
+function sendGhostHomeAndWait(g, nowMs) {
+    const r = EATEN_RESPAWNS[g.ghostId] ?? EATEN_RESPAWNS.pinky;
+
+    g.tileX = r.tileX;
+    g.tileY = r.tileY;
+    g.dir = { ...r.dir };
+    g.nextDir = { ...r.dir };
+
+    // Back into the house, then re-release after a short wait.
+    g.state = "inHouse";
+    g.releaseAtMs = nowMs + GHOST_EAT_WAIT_MS;
+
+    // Clear frightened immediately.
+    g.frightenedUntilMs = 0;
+    g.baseMode = currentGame.ghostMode;
+    g.mode = currentGame.ghostMode;
+
+    resetProgressAndSnap(g);
+
+    gdbg(g.ghostId, "EATEN -> back to house", {
+        respawn: { x: g.tileX, y: g.tileY },
+        releaseAtMs: g.releaseAtMs,
+        nowMs,
+    });
+}
+
+function handleFrightenedGhostEats(nowMs) {
+    // Fast path: no frightened active ghosts
+    let anyFrightened = false;
+
+    for (const g of currentGame.ghosts.values()) {
+        if (g.state === "active" && g.mode === "frightened") {
+            anyFrightened = true;
+            break;
+        }
+    }
+    if (!anyFrightened) return false;
+
+    for (const [pid, p] of currentGame.players.entries()) {
+        if (!isPlayerAlive(pid)) continue;
+
+        const pp = getPlayerPosPx(p);
+        if (!pp) continue;
+
+        for (const g of currentGame.ghosts.values()) {
+            if (g.state !== "active") continue;
+            if (g.mode !== "frightened") continue;
+
+            const d = Math.hypot(pp.x - g.x, pp.y - g.y);
+            if (d <= GHOST_COLLIDE_RADIUS_PX) {
+                sendGhostHomeAndWait(g, nowMs);
+
+                // Optional event for SFX/score; safe if clients ignore
+                io?.emit?.("GhostEaten", { ghostId: g.ghostId, byPlayerId: pid });
+
+                return true; // do at most one per tick to avoid double-eats
+            }
+        }
+    }
+
+    return false;
+}
+
 // Walls + gate rules
 const WALLS = new Set(["═", "║", "╔", "╗", "╚", "╝", "┌", "┐", "└", "┘", "|", "-"]);
 
@@ -463,6 +550,7 @@ function ghostSnapshotPayload() {
         state: g.state,
         mode: g.mode,
         releaseAtMs: g.releaseAtMs,
+        frightenedUntilMs: g.frightenedUntilMs,
         seq: g.seq,
     }));
 }
@@ -705,7 +793,9 @@ function startServerTickLoop() {
             stepGhost(g, dtSeconds, now);
         }
 
-        broadcastGhostSnapshot(false);
+        // If a frightened ghost was eaten, force a snapshot so clients see the teleport immediately.
+        const ate = handleFrightenedGhostEats(now);
+        broadcastGhostSnapshot(ate);
     }, tickMs);
 }
 
@@ -867,20 +957,27 @@ export function initSocketServer(server) {
             });
 
             if (isPower) {
-                io.emit("FrightenedStart", { durationMs: 7000 });
                 const now = Date.now();
+                io.emit("FrightenedStart", { untilMs: now + 7000, durationMs: 7000 });
+
                 for (const g of currentGame.ghosts.values()) {
+                    // ✅ Only ghosts that are out on the map get frightened
+                    if (g.state !== "active") continue; // skips inHouse + leaving
+
                     g.mode = "frightened";
                     g.frightenedUntilMs = now + 7000;
 
-                    if (g.state === "active" && g.progress === 0) {
+                    // ✅ Reverse direction on frightened start (only for active ghosts)
+                    if (g.progress === 0) {
                         g.dir = { x: -g.dir.x, y: -g.dir.y };
                         g.nextDir = { ...g.dir };
                         resetProgressAndSnap(g);
                     }
                 }
+
                 broadcastGhostSnapshot(true);
             }
+
         });
 
         socket.on("PlayerDied", ({ victimPlayerId }) => {

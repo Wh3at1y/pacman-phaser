@@ -1,9 +1,8 @@
-// src/socket.js
+// src/socket.js (DROP-IN REPLACEMENT)
 // Server-authoritative ghosts: TILE-PROGRESS grid movement + Pac-Man targeting,
-// deterministic ghost-house exit rail.
-// Scatter corners are HARD-CODED to the actual corner pellets in your ASCII level.
+// PLUS a deterministic ghost-house exit rail.
 //
-// Debug: set env DEBUG_GHOSTS=1
+// Debug: set env DEBUG_GHOSTS=1 to print diagnostics.
 
 import { Server } from "socket.io";
 import initializeMovement from "./helpers/movement.js";
@@ -16,7 +15,7 @@ const TILE_SIZE = Number(process.env.TILE_SIZE || 24);
 const SERVER_TICK_HZ = Number(process.env.SERVER_TICK_HZ || 30);
 const GHOST_BROADCAST_HZ = Number(process.env.GHOST_BROADCAST_HZ || 20);
 
-const DEBUG_GHOSTS = String(process.env.DEBUG_GHOSTS || "").trim() === "1";
+const DEBUG_GHOSTS = false
 function gdbg(id, msg, obj) {
     if (!DEBUG_GHOSTS) return;
     if (obj !== undefined) console.log(`[GHOST ${id}] ${msg}`, obj);
@@ -43,9 +42,9 @@ const MODE_SCHEDULE = [
 
 const GHOST_TILES_PER_SEC = {
     blinky: 6.2,
-    pinky: 6.0,
-    inky: 4.0,
-    clyde: 3.8,
+    pinky: 6,
+    inky: 5.5,
+    clyde: 5,
 };
 
 function ghostSpeedPx(g) {
@@ -91,12 +90,6 @@ function wrapIndex(n, size) {
     if (n >= size) return 0;
     return n;
 }
-function wrapX(x, COLS) {
-    return wrapIndex(x, COLS);
-}
-function clampY(y, ROWS) {
-    return clamp(y, 0, ROWS - 1);
-}
 
 function mulberry32(seed) {
     let t = seed >>> 0;
@@ -112,7 +105,7 @@ const playerNames = ["ButterBall", "Chowder", "BubbleWrap", "OrbitGum"];
 
 function makeEmptyGameState() {
     return {
-        players: new Map(), // MUST contain x/y or tileX/tileY for server-side chase
+        players: new Map(),
         round: 1,
         scores: new Map(),
         lives: new Map(),
@@ -130,6 +123,7 @@ function makeEmptyGameState() {
         ghostMode: "scatter",
         ghostModeIndex: 0,
         ghostModeEndsAtMs: 0,
+        ghostsFrozenUntilMs: 0,
     };
 }
 
@@ -198,18 +192,20 @@ function dist2(ax, ay, bx, by) {
     const dy = ay - by;
     return dx * dx + dy * dy;
 }
-
-// ✅ HARD-CODED SCATTER TARGETS FROM YOUR ASCII LEVEL (corner power pellets)
-// These must be reachable tiles, not “border-ish” y=30.
-// If you ever change the level, update these numbers.
+function wrapX(x) {
+    return wrapIndex(x, COLS);
+}
+function clampY(y) {
+    return clamp(y, 0, ROWS - 1);
+}
 function scatterTargetFor(ghostId) {
-    const SCATTER = {
-        blinky: { x: 26, y: 1 },  // top-right pellet
-        pinky:  { x: 1,  y: 1 },  // top-left pellet
-        inky:   { x: 26, y: 29 }, // bottom-right pellet (NOT 30)
-        clyde:  { x: 1,  y: 29 }, // bottom-left pellet (NOT 30)
-    };
-    return SCATTER[ghostId] ?? { x: 1, y: 1 };
+    switch (ghostId) {
+        case "blinky": return { x: 26, y: 1 };
+        case "pinky":  return { x: 1, y: 1 };
+        case "inky":   return { x: 26, y: 30};
+        case "clyde":  return { x: 1, y: 30 };
+        default:       return { x: 1, y: 1 };
+    }
 }
 
 function normalizeDir(d) {
@@ -226,18 +222,12 @@ function normalizeDir(d) {
 
 function getPlayerTile(p) {
     if (!p) return null;
-
-    // Prefer server-stored tile coords if available
     if (Number.isFinite(p.tileX) && Number.isFinite(p.tileY)) return { x: p.tileX, y: p.tileY };
-
-    // Fall back to pixel coords if that's what client sends
     if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
-        return { x: wrapX(Math.floor(p.x / TILE_SIZE), COLS), y: clampY(Math.floor(p.y / TILE_SIZE), ROWS) };
+        return { x: wrapX(Math.floor(p.x / TILE_SIZE)), y: clampY(Math.floor(p.y / TILE_SIZE)) };
     }
-
     return null;
 }
-
 function getPlayerDir(p) {
     return normalizeDir(p?.dir ?? p?.direction ?? p?.currentDir);
 }
@@ -247,24 +237,28 @@ function isPlayerAlive(playerId) {
     return l == null ? true : l > 0;
 }
 
-// ✅ Find the closest *alive* Pac-Man to the ghost
+function freezeGhostsForIntro(ms = 2000) {
+    currentGame.ghostsFrozenUntilMs = Date.now() + ms;
+
+    if (DEBUG_GHOSTS) {
+        console.log("[GHOSTS] frozen until", currentGame.ghostsFrozenUntilMs);
+    }
+}
+
 function getNearestAlivePlayerTile(fromTile) {
     let best = null;
     let bestD = Infinity;
 
     for (const [pid, p] of currentGame.players.entries()) {
         if (!isPlayerAlive(pid)) continue;
-
         const t = getPlayerTile(p);
         if (!t) continue;
-
         const d = dist2(fromTile.x, fromTile.y, t.x, t.y);
         if (d < bestD) {
             bestD = d;
             best = { playerId: pid, tile: t, dir: getPlayerDir(p) };
         }
     }
-
     return best;
 }
 
@@ -275,7 +269,7 @@ function getChaseTarget(ghostId, pacTile, pacDir) {
 
     if (ghostId === "pinky") {
         const ahead = 4;
-        return { x: wrapX(pacTile.x + pacDir.x * ahead, COLS), y: clampY(pacTile.y + pacDir.y * ahead, ROWS) };
+        return { x: wrapX(pacTile.x + pacDir.x * ahead), y: clampY(pacTile.y + pacDir.y * ahead) };
     }
 
     if (ghostId === "inky") {
@@ -283,14 +277,14 @@ function getChaseTarget(ghostId, pacTile, pacDir) {
         const blTile = blinky ? { x: blinky.tileX, y: blinky.tileY } : null;
 
         const ahead = 2;
-        const px = wrapX(pacTile.x + pacDir.x * ahead, COLS);
-        const py = clampY(pacTile.y + pacDir.y * ahead, ROWS);
+        const px = wrapX(pacTile.x + pacDir.x * ahead);
+        const py = clampY(pacTile.y + pacDir.y * ahead);
 
         if (!blTile) return { x: px, y: py };
 
         const vx = px - blTile.x;
         const vy = py - blTile.y;
-        return { x: wrapX(blTile.x + vx * 2, COLS), y: clampY(blTile.y + vy * 2, ROWS) };
+        return { x: wrapX(blTile.x + vx * 2), y: clampY(blTile.y + vy * 2) };
     }
 
     if (ghostId === "clyde") {
@@ -312,8 +306,8 @@ function chooseDirToward(tileX, tileY, currentDir, validDirs, targetTile) {
     let bestD = Infinity;
 
     for (const d of validDirs) {
-        const nx = wrapX(tileX + d.x, COLS);
-        const ny = clampY(tileY + d.y, ROWS);
+        const nx = wrapX(tileX + d.x);
+        const ny = clampY(tileY + d.y);
         const dd = dist2(nx, ny, targetTile.x, targetTile.y);
         if (dd < bestD) {
             bestD = dd;
@@ -395,6 +389,7 @@ function forceGhostToDoorAndUp(g) {
         return false;
     }
 
+    // Put ghost ON the gate tile, then we'll move one tile up to exitTile
     g.tileX = door.x;
     g.tileY = door.y;
     g.dir = { x: 0, y: -1 };
@@ -415,32 +410,16 @@ function forceGhostToDoorAndUp(g) {
 // ---- Ghost init ----
 function initGhosts(nowMs) {
     currentGame.house = computeHouseInfoFromLevel();
-
     dbgOnce("houseInfo", "[HOUSE] computed", {
         doorTiles: currentGame.house?.doorTiles,
         exitTile: currentGame.house?.exitTile,
         inHouseMinY: currentGame.house?.inHouseMinY,
         inHouseMaxY: currentGame.house?.inHouseMaxY,
+        doorTileChars: currentGame.house?.doorTiles?.map((t) => level1[t.y]?.[t.x]),
+        exitTileChar: currentGame.house?.exitTile
+            ? level1[currentGame.house.exitTile.y]?.[currentGame.house.exitTile.x]
+            : null,
     });
-
-    if (DEBUG_GHOSTS) {
-        // Verify scatter tile chars so you can see instantly if they’re wrong
-        const s = {
-            blinky: scatterTargetFor("blinky"),
-            pinky: scatterTargetFor("pinky"),
-            inky: scatterTargetFor("inky"),
-            clyde: scatterTargetFor("clyde"),
-        };
-        console.log("[SCATTER] targets+chars", {
-            targets: s,
-            chars: {
-                blinky: level1[s.blinky.y]?.[s.blinky.x],
-                pinky: level1[s.pinky.y]?.[s.pinky.x],
-                inky: level1[s.inky.y]?.[s.inky.x],
-                clyde: level1[s.clyde.y]?.[s.clyde.x],
-            },
-        });
-    }
 
     currentGame.ghosts.clear();
 
@@ -606,6 +585,15 @@ function stepGhostTileProgress(g, dtSeconds, speedPx, opts = { allowTurns: true 
 
 // ---- Ghost step ----
 function stepGhost(g, dtSeconds, nowMs) {
+    // Global ghost freeze (round start / death wipe intro)
+    if (nowMs < currentGame.ghostsFrozenUntilMs) {
+        // Keep ghosts snapped to tile centers, but DO NOT MOVE
+        if (g.progress !== 0) {
+            resetProgressAndSnap(g);
+        }
+        return;
+    }
+
     advanceGhostModeIfNeeded(nowMs);
 
     // frightened expiry
@@ -647,24 +635,42 @@ function stepGhost(g, dtSeconds, nowMs) {
         }
     }
 
-    // LEAVING: move ONE TILE up to exitTile, then become active
+    // LEAVING: move ONE TILE up to exitTile, then immediately become active
     if (g.state === "leaving") {
         const exit = currentGame.house?.exitTile;
 
+        // If we're already in the corridor tile (exitTile), stop leaving BEFORE trying to go further up.
         if (exit && g.tileX === exit.x && g.tileY === exit.y) {
             gdbg(g.ghostId, "LEAVING -> ACTIVE (at exitTile)", { tile: { x: g.tileX, y: g.tileY }, exit });
+
             g.state = "active";
             resetProgressAndSnap(g);
+
+            // IMPORTANT: do NOT continue forcing UP this tick.
             return;
         }
 
+        // Force UP while below exitTile (door -> corridor).
         if (g.progress === 0) {
             g.dir = { x: 0, y: -1 };
             g.nextDir = { x: 0, y: -1 };
+
+            if (DEBUG_GHOSTS) {
+                gdbg(g.ghostId, "LEAVING center", {
+                    tile: { x: g.tileX, y: g.tileY },
+                    exitTile: exit,
+                    hereChar: level1[g.tileY]?.[g.tileX],
+                    upChar: level1[g.tileY - 1]?.[g.tileX],
+                    canUp: isGhostPassable(g.tileX, g.tileY, g.tileX, g.tileY - 1),
+                });
+            }
         }
 
+        // While leaving we DO NOT allow turns; we just go up one tile into the corridor.
         stepGhostTileProgress(g, dtSeconds, ghostSpeedPx(g), { allowTurns: false });
         g.seq++;
+
+        // If we just arrived at exitTile, we'll switch next tick (or immediately above if you want).
         return;
     }
 
@@ -795,13 +801,6 @@ export function initSocketServer(server) {
                 socketId: socket.id,
                 lastSeen: Date.now(),
                 lobbyLeader: currentGame.players.size === 0,
-
-                // position gets filled by movement.js PlayerState updates
-                x: null,
-                y: null,
-                tileX: null,
-                tileY: null,
-                dir: null,
             });
         }
 
@@ -827,19 +826,13 @@ export function initSocketServer(server) {
 
             io.emit("startGame");
             resetRoundStateKeepPlayers();
+            freezeGhostsForIntro();
 
-            await waitASec(2000);
+            await waitASec(3000);
 
             currentGame.gameRunning = true;
             startServerTickLoop();
             broadcastGhostSnapshot(true);
-
-            io.emit("beginRound1", {
-                round: currentGame.round,
-                scores: Object.fromEntries(currentGame.scores.entries()),
-                lives: Object.fromEntries(currentGame.lives.entries()),
-                rngSeed: currentGame.rngSeed,
-            });
         });
 
         socket.on("KickPlayer", (socketId) => {
@@ -850,7 +843,7 @@ export function initSocketServer(server) {
             emitLobbyState();
         });
 
-        // Player movement relay + server-side state storage happens in movement.js now
+        // Player movement relay
         initializeMovement(socket, io, playerId, currentGame.players);
 
         socket.on("DotEaten", ({ playerId: eaterId, x, y, type, seq }) => {
@@ -914,19 +907,35 @@ export function initSocketServer(server) {
         });
 
         socket.on("RoundEnded", () => {
+            // Called when the *current round* ends (either all dots collected OR everyone died this life).
+            // Pac-Man behavior: reset positions (players + ghosts) but DO NOT reset dots unless the board is cleared.
             const respawn = [];
             for (const [pid] of currentGame.players) {
                 const l = currentGame.lives.get(pid) ?? 0;
                 if (l > 0) respawn.push(pid);
             }
 
-            if ((currentGame.dotsRemaining ?? 0) <= 0) {
+            const clearedBoard = (currentGame.dotsRemaining ?? 0) <= 0;
+
+            if (clearedBoard) {
                 currentGame.round += 1;
                 currentGame.dotsRemaining = 244;
-                const now = Date.now();
-                resetGhostModeSchedule(now);
-                initGhosts(now);
-                broadcastGhostSnapshot(true);
+            }
+
+            // Always reset ghosts on ANY round end (death-wipe or board-clear).
+            const now = Date.now();
+            resetGhostModeSchedule(now);
+            initGhosts(now);
+            freezeGhostsForIntro();
+            broadcastGhostSnapshot(true);
+
+            if (DEBUG_GHOSTS) {
+                console.log("[ROUND] RoundEnded -> reset positions", {
+                    clearedBoard,
+                    round: currentGame.round,
+                    respawn,
+                    dotsRemaining: currentGame.dotsRemaining,
+                });
             }
 
             io.emit("RoundEnded", { respawn, round: currentGame.round });
@@ -939,7 +948,6 @@ export function initSocketServer(server) {
         socket.on("dumpGhostDebug", () => {
             if (!DEBUG_GHOSTS) return;
             console.log("[DUMP] house:", currentGame.house);
-            console.log("[DUMP] players:", Object.fromEntries(currentGame.players.entries()));
             for (const g of currentGame.ghosts.values()) {
                 console.log("[DUMP] ghost:", {
                     id: g.ghostId,

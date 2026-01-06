@@ -87,11 +87,11 @@ export default class MainScene extends Phaser.Scene {
         this.dotSeq = 0;
 
         // AUDIO
-        this.roundStartSound = this.sound.add("roundStart", {volume: 0.1});
-        this.eatSound = this.sound.add("eatLoop", {loop: true, volume: 0.1});
-        this.deadSound = this.sound.add("dead", {volume: 0.5});
-        this.eatGhost = this.sound.add("eatGhost", { volume: 0.9 });
-        this.frightenedMusic = this.sound.add("frightened", { volume: 0.35 });
+        this.roundStartSound = this.sound.add("roundStart", {volume: 0.3});
+        this.eatSound = this.sound.add("eatLoop", {loop: true, volume: 0.07});
+        this.deadSound = this.sound.add("dead", {volume: 1});
+        this.eatGhost = this.sound.add("eatGhost", { volume: 0.4 });
+        this.frightenedMusic = this.sound.add("frightened", { volume: 0.2 });
 
         // --- Siren (background) ---
         this.sirens = [
@@ -225,6 +225,9 @@ export default class MainScene extends Phaser.Scene {
 
         this.socket.on("GhostSnapshot", this._onGhostSnapshot);
         this.socket.emit("GhostSnapshotRequest");
+        this.socket.on("AllDead", () => {
+            this.stopSiren()
+        })
 
         // INPUT: send key presses
         this.inputSeq = 0;
@@ -258,7 +261,7 @@ export default class MainScene extends Phaser.Scene {
         // STATE: send local player state periodically
         this.stateSeq = 0;
         this.netTick = this.time.addEvent({
-            delay: 50,
+            delay: 20,
             loop: true,
             callback: () => {
                 const p = this.getLocalPlayer();
@@ -459,6 +462,32 @@ export default class MainScene extends Phaser.Scene {
             .setOrigin(0.5)
             .setDepth(1001)
             .setVisible(false);
+
+        this.youAreDead = this.add
+            .text((this.levelCols * TILE_SIZE) / 2, (this.levelRows * TILE_SIZE) / 2, "YOU ARE DEAD...", {
+                fontFamily: "Arial",
+                fontSize: "28px",
+                color: "red",
+                fontStyle: "bold",
+            })
+            .setOrigin(0.5)
+            .setDepth(1001)
+            .setVisible(false);
+
+        this.roundComplete = this.add
+            .text((this.levelCols * TILE_SIZE) / 2, (this.levelRows * TILE_SIZE) / 2, "ROUND COMPLETE!", {
+                fontFamily: "Arial",
+                fontSize: "28px",
+                color: "white",
+                fontStyle: "bold",
+            })
+            .setOrigin(0.5)
+            .setDepth(1001)
+            .setVisible(false);
+
+        this.socket.on("RoundComplete", () => {
+            this.roundComplete.setVisible(true)
+        });
 
         // Build dots + render level
         this.buildDotsFromLevel();
@@ -674,6 +703,8 @@ export default class MainScene extends Phaser.Scene {
         this.readyOverlay.setVisible(true);
         this.readyText.setVisible(true);
         this.roundStartSound?.play();
+        this.youAreDead.setVisible(false)
+        this.roundComplete.setVisible(false)
 
         for (let i = 0; i < this.players.length; i++) {
             this.players[i].reset(PACMAN_START_TILES[i] ?? PACMAN_START_TILES[0]);
@@ -735,6 +766,7 @@ export default class MainScene extends Phaser.Scene {
             this.stopEatSound();
             this.deadSound?.play();
             this.socket.emit("PlayerDied", {victimPlayerId: player.playerId});
+            this.youAreDead.setVisible(true)
         }
 
         // if (this.players.every((p) => !p.isAlive || p.outUntilRoundEnd)) {
@@ -801,7 +833,7 @@ export default class MainScene extends Phaser.Scene {
             if (moved && !this.players[i].isRemote) this.collectDotAt(this.players[i]);
         }
 
-        const eatingRecently = this.time.now - this.lastEatTime < 140;
+        const eatingRecently = this.time.now - this.lastEatTime < 240;
         if (anyMoved && eatingRecently) {
             if (this.eatSound.isPaused) this.eatSound.resume();
             else if (!this.eatSound.isPlaying) this.eatSound.play();

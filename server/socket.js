@@ -12,7 +12,7 @@ import {level1, level1_intersections} from "./levels/level1.js";
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || true;
 
 const STARTUP_MS = 4500; // match your startup sound
-const DEATH_AUDIO_MS = 3000;
+const DEATH_AUDIO_MS = 4000;
 
 const TILE_SIZE = Number(process.env.TILE_SIZE || 24);
 const SERVER_TICK_HZ = Number(process.env.SERVER_TICK_HZ || 20);
@@ -899,7 +899,11 @@ function resetRoundStateKeepPlayers(baseNowMs = Date.now()) {
 }
 
 
-function endRoundFromServer(extraDelayMs = 0) {
+async function endRoundFromServer(extraDelayMs = 0, roundComplete) {
+    io.emit("AllDead")
+    if(roundComplete) io.emit("RoundComplete")
+    await waitASec(DEATH_AUDIO_MS)
+
     const respawn = [];
     for (const [pid] of currentGame.players) {
         const l = currentGame.lives.get(pid) ?? 0;
@@ -922,6 +926,7 @@ function endRoundFromServer(extraDelayMs = 0) {
     initGhosts(startAtMs);
     freezeGhostsForIntro(startAtMs);
     broadcastGhostSnapshot(true);
+
 
     io.emit("RoundEnded", {
         respawn,
@@ -1065,7 +1070,7 @@ export function initSocketServer(server) {
 
                 broadcastGhostSnapshot(true);
             }
-            if(currentGame.dotsRemaining <= 0) endRoundFromServer();
+            if(currentGame.dotsRemaining <= 0) endRoundFromServer(null, true);
         });
 
         socket.on("PlayerDied", ({ victimPlayerId }) => {
@@ -1079,7 +1084,6 @@ export function initSocketServer(server) {
             currentGame.lives.set(victimPlayerId, nextLives);
             currentGame.deaths.set(victimPlayerId, (currentGame.deaths.get(victimPlayerId) ?? 0) + 1);
             currentGame.players.get(victimPlayerId).alive = false;
-            console.log('DIED', currentGame)
 
             let allDead = true;
 

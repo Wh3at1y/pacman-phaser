@@ -297,11 +297,11 @@ export default class Player {
         // ===== TURN THESE UP FOR MORE CHAOS =====
         const basePixelSize = 4;      // was ~3
         const maxPixelSize = 7;       // BIG CHUNKS
-        const count = 260;            // MORE PIXELS (was ~120)
-        const lifetimeMs = 1250;       // slightly longer
+        const count = 960;            // MORE PIXELS (was ~120)
+        const lifetimeMs = 5250;       // slightly longer
         const gravity = 100;          // heavier fall
         const spread = 1.35;          // wider blast
-        const ringRadiusBoost = 40;   // bigger shockwave
+        const ringRadiusBoost = 30;   // bigger shockwave
         // =======================================
 
         const shards = [];

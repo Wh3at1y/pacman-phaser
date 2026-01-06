@@ -4,18 +4,23 @@
 //
 // Debug: set env DEBUG_GHOSTS=1 to print diagnostics.
 
-import { Server } from "socket.io";
+import {Server} from "socket.io";
 import initializeMovement from "./helpers/movement.js";
-import { waitASec } from "./helpers/timeout.js";
-import { level1, level1_intersections } from "./levels/level1.js";
+import {waitASec} from "./helpers/timeout.js";
+import {level1, level1_intersections} from "./levels/level1.js";
 
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || true;
 
+const STARTUP_MS = 4500; // match your startup sound
+const DEATH_AUDIO_MS = 3000;
+
 const TILE_SIZE = Number(process.env.TILE_SIZE || 24);
-const SERVER_TICK_HZ = Number(process.env.SERVER_TICK_HZ || 30);
+const SERVER_TICK_HZ = Number(process.env.SERVER_TICK_HZ || 20);
 const GHOST_BROADCAST_HZ = Number(process.env.GHOST_BROADCAST_HZ || 20);
 
-const DEBUG_GHOSTS = false
+// If you actually want this env toggle to work, don't set it to false forever.
+const DEBUG_GHOSTS = Boolean(process.env.DEBUG_GHOSTS) || false;
+
 function gdbg(id, msg, obj) {
     if (!DEBUG_GHOSTS) return;
     if (obj !== undefined) console.log(`[GHOST ${id}] ${msg}`, obj);
@@ -65,13 +70,14 @@ const GHOST_SPAWNS = {
 const EATEN_RESPAWNS = {
     // When a frightened ghost is eaten, it returns to the house (box), not its round-1 spawn.
     blinky: { tileX: 14, tileY: 14, dir: { x: 0, y: -1 } },
-    pinky:  { tileX: 14, tileY: 14, dir: { x: 0, y: -1 } },
-    inky:   { tileX: 12, tileY: 14, dir: { x: 0, y: -1 } },
-    clyde:  { tileX: 16, tileY: 14, dir: { x: 0, y: -1 } },
+    pinky: { tileX: 14, tileY: 14, dir: { x: 0, y: -1 } },
+    inky: { tileX: 12, tileY: 14, dir: { x: 0, y: -1 } },
+    clyde: { tileX: 16, tileY: 14, dir: { x: 0, y: -1 } },
 };
 
-const GHOST_EAT_WAIT_MS = 1000;
-const GHOST_COLLIDE_RADIUS_PX = TILE_SIZE * 0.60;
+const GHOST_EAT_WAIT_MS = 2000;
+const GHOST_COLLIDE_RADIUS_PX = TILE_SIZE * 1.5; // generous “barely touched”
+
 
 const RELEASE_BY_NAME_MS = {
     blinky: 1000,
@@ -212,10 +218,10 @@ function clampY(y) {
 function scatterTargetFor(ghostId) {
     switch (ghostId) {
         case "blinky": return { x: 26, y: 1 };
-        case "pinky":  return { x: 1, y: 1 };
-        case "inky":   return { x: 26, y: 30};
-        case "clyde":  return { x: 1, y: 30 };
-        default:       return { x: 1, y: 1 };
+        case "pinky": return { x: 1, y: 1 };
+        case "inky": return { x: 26, y: 30 };
+        case "clyde": return { x: 1, y: 30 };
+        default: return { x: 1, y: 1 };
     }
 }
 
@@ -248,13 +254,12 @@ function isPlayerAlive(playerId) {
     return l == null ? true : l > 0;
 }
 
-function freezeGhostsForIntro(ms = 2000) {
-    currentGame.ghostsFrozenUntilMs = Date.now() + ms;
-
-    if (DEBUG_GHOSTS) {
-        console.log("[GHOSTS] frozen until", currentGame.ghostsFrozenUntilMs);
-    }
+function freezeGhostsForIntro(msOrUntilMs = STARTUP_MS) {
+    // If caller passes a big number (timestamp), treat it as "until"
+    const now = Date.now();
+    currentGame.ghostsFrozenUntilMs = msOrUntilMs > 60_000_000_000 ? msOrUntilMs : (now + msOrUntilMs);
 }
+
 
 function getNearestAlivePlayerTile(fromTile) {
     let best = null;
@@ -333,7 +338,6 @@ function chooseRandom(validDirs) {
     const r = currentGame.rand ? currentGame.rand() : Math.random();
     return validDirs[Math.floor(r * validDirs.length)];
 }
-
 
 // -----------------------------------------
 // Ghost-vs-player collision (server-authoritative for frightened eats)
@@ -442,6 +446,57 @@ function getValidDirs(tileX, tileY, currentDir, allowReverse) {
         return getValidDirs(tileX, tileY, currentDir, true);
     }
     return out;
+}
+
+/**
+ * Pac-Man-accurate immediate reversal:
+ * - If ghost is mid-tile, we "transfer" it to the tile it's moving toward, flip dir,
+ *   and set progress = TILE_SIZE - progress so its world position stays the same.
+ * - Only makes sense for ACTIVE ghosts.
+ */
+function reverseGhostNow(g) {
+    if (!g?.dir) return;
+
+    const oldDir = g.dir;
+    const newDir = { x: -oldDir.x, y: -oldDir.y };
+
+    // If centered, easy.
+    if (!g.progress || g.progress === 0) {
+        g.dir = newDir;
+        g.nextDir = { ...newDir };
+        resetProgressAndSnap(g); // keeps it clean at center
+        return;
+    }
+
+    // Mid-tile: keep world position, flip dir, but shift tile coords to the tile we were moving toward.
+    const aheadX = wrapIndex(g.tileX + oldDir.x, COLS);
+    const aheadY = clamp(g.tileY + oldDir.y, 0, ROWS - 1);
+
+    // This should always be passable because we are literally already traveling into it,
+    // but guard anyway to avoid teleporting into walls if something got desynced.
+    if (!isGhostPassable(g.tileX, g.tileY, aheadX, aheadY)) {
+        gdbg(g.ghostId, "reverseGhostNow blocked (ahead not passable), snapping", {
+            tile: { x: g.tileX, y: g.tileY },
+            dir: oldDir,
+            ahead: { x: aheadX, y: aheadY },
+        });
+        g.dir = newDir;
+        g.nextDir = { ...newDir };
+        resetProgressAndSnap(g);
+        return;
+    }
+
+    // Keep x/y exactly where they are (that’s the whole point), but rebase tile/progress.
+    const oldProgress = g.progress;
+    g.tileX = aheadX;
+    g.tileY = aheadY;
+    g.dir = newDir;
+    g.nextDir = { ...newDir };
+    g.progress = TILE_SIZE - oldProgress;
+
+    // And recompute x/y from the new base to eliminate floating drift:
+    g.x = tileCenterX(g.tileX) + g.dir.x * g.progress;
+    g.y = tileCenterY(g.tileY) + g.dir.y * g.progress;
 }
 
 function resetGhostModeSchedule(nowMs) {
@@ -693,10 +748,9 @@ function stepGhost(g, dtSeconds, nowMs) {
 
     // schedule sync if not frightened
     if (g.mode !== "frightened") {
-        if (g.state === "active" && g.progress === 0 && g.baseMode && g.baseMode !== currentGame.ghostMode) {
-            g.dir = { x: -g.dir.x, y: -g.dir.y };
-            g.nextDir = { ...g.dir };
-            resetProgressAndSnap(g);
+        // IMPORTANT: real Pac-Man reverses immediately on mode switch (active ghosts only)
+        if (g.state === "active" && g.baseMode && g.baseMode !== currentGame.ghostMode) {
+            reverseGhostNow(g);
         }
         g.baseMode = currentGame.ghostMode;
         g.mode = currentGame.ghostMode;
@@ -758,7 +812,6 @@ function stepGhost(g, dtSeconds, nowMs) {
         stepGhostTileProgress(g, dtSeconds, ghostSpeedPx(g), { allowTurns: false });
         g.seq++;
 
-        // If we just arrived at exitTile, we'll switch next tick (or immediately above if you want).
         return;
     }
 
@@ -827,7 +880,7 @@ function ensureLobbyLeader() {
     if (first) first.lobbyLeader = true;
 }
 
-function resetRoundStateKeepPlayers() {
+function resetRoundStateKeepPlayers(baseNowMs = Date.now()) {
     currentGame.round = 1;
     currentGame.scores = new Map();
     currentGame.lives = new Map();
@@ -840,11 +893,45 @@ function resetRoundStateKeepPlayers() {
         currentGame.deaths.set(pid, 0);
     }
 
-    const now = Date.now();
-    resetGhostModeSchedule(now);
-    initGhosts(now);
+    resetGhostModeSchedule(baseNowMs);
+    initGhosts(baseNowMs);
     broadcastGhostSnapshot(true);
 }
+
+
+function endRoundFromServer(extraDelayMs = 0) {
+    const respawn = [];
+    for (const [pid] of currentGame.players) {
+        const l = currentGame.lives.get(pid) ?? 0;
+        if (l > 0) {
+            respawn.push(pid);
+            currentGame.players.get(pid).alive = true;
+        }
+    }
+
+    const clearedBoard = (currentGame.dotsRemaining ?? 0) <= 0;
+    if (clearedBoard) {
+        currentGame.round += 1;
+        currentGame.dotsRemaining = 244;
+    }
+
+    // IMPORTANT: startAtMs includes death audio delay + normal startup delay
+    const startAtMs = Date.now() + extraDelayMs + STARTUP_MS;
+
+    resetGhostModeSchedule(startAtMs);
+    initGhosts(startAtMs);
+    freezeGhostsForIntro(startAtMs);
+    broadcastGhostSnapshot(true);
+
+    io.emit("RoundEnded", {
+        respawn,
+        round: currentGame.round,
+        startAtMs,
+        startupMs: STARTUP_MS,
+    });
+}
+
+
 
 function backToLobby(reason = "all_eliminated") {
     currentGame.gameRunning = false;
@@ -891,6 +978,7 @@ export function initSocketServer(server) {
                 socketId: socket.id,
                 lastSeen: Date.now(),
                 lobbyLeader: currentGame.players.size === 0,
+                alive: true
             });
         }
 
@@ -914,16 +1002,20 @@ export function initSocketServer(server) {
             currentGame.rngSeed = (Date.now() & 0xffffffff) >>> 0;
             currentGame.rand = mulberry32(currentGame.rngSeed);
 
-            io.emit("startGame");
-            resetRoundStateKeepPlayers();
-            freezeGhostsForIntro();
+            const startAtMs = Date.now() + STARTUP_MS;
 
-            await waitASec(3000);
+            io.emit("startGame", { startAtMs, startupMs: STARTUP_MS });
+
+            resetRoundStateKeepPlayers(startAtMs);
+            freezeGhostsForIntro(startAtMs);
+
+            await waitASec(STARTUP_MS);
 
             currentGame.gameRunning = true;
             startServerTickLoop();
             broadcastGhostSnapshot(true);
         });
+
 
         socket.on("KickPlayer", (socketId) => {
             const p = currentGame.players.get(playerId);
@@ -961,23 +1053,19 @@ export function initSocketServer(server) {
                 io.emit("FrightenedStart", { untilMs: now + 7000, durationMs: 7000 });
 
                 for (const g of currentGame.ghosts.values()) {
-                    // ✅ Only ghosts that are out on the map get frightened
+                    // Only ghosts that are out on the map get frightened
                     if (g.state !== "active") continue; // skips inHouse + leaving
 
                     g.mode = "frightened";
                     g.frightenedUntilMs = now + 7000;
 
-                    // ✅ Reverse direction on frightened start (only for active ghosts)
-                    if (g.progress === 0) {
-                        g.dir = { x: -g.dir.x, y: -g.dir.y };
-                        g.nextDir = { ...g.dir };
-                        resetProgressAndSnap(g);
-                    }
+                    // Real Pac-Man: reverse immediately on frightened start (even mid-tile)
+                    reverseGhostNow(g);
                 }
 
                 broadcastGhostSnapshot(true);
             }
-
+            if(currentGame.dotsRemaining <= 0) endRoundFromServer();
         });
 
         socket.on("PlayerDied", ({ victimPlayerId }) => {
@@ -990,6 +1078,17 @@ export function initSocketServer(server) {
             const nextLives = curLives - 1;
             currentGame.lives.set(victimPlayerId, nextLives);
             currentGame.deaths.set(victimPlayerId, (currentGame.deaths.get(victimPlayerId) ?? 0) + 1);
+            currentGame.players.get(victimPlayerId).alive = false;
+            console.log('DIED', currentGame)
+
+            let allDead = true;
+
+            for (const { alive } of currentGame.players.values()) {
+                if (alive) {
+                    allDead = false;
+                    break;
+                }
+            }
 
             io.emit("LivesUpdate", {
                 playerId: victimPlayerId,
@@ -1001,41 +1100,11 @@ export function initSocketServer(server) {
                 (pId) => (currentGame.lives.get(pId) ?? 0) <= 0
             );
             if (allEliminated) backToLobby("all_eliminated");
+            else if(allDead) endRoundFromServer()
         });
 
         socket.on("RoundEnded", () => {
-            // Called when the *current round* ends (either all dots collected OR everyone died this life).
-            // Pac-Man behavior: reset positions (players + ghosts) but DO NOT reset dots unless the board is cleared.
-            const respawn = [];
-            for (const [pid] of currentGame.players) {
-                const l = currentGame.lives.get(pid) ?? 0;
-                if (l > 0) respawn.push(pid);
-            }
-
-            const clearedBoard = (currentGame.dotsRemaining ?? 0) <= 0;
-
-            if (clearedBoard) {
-                currentGame.round += 1;
-                currentGame.dotsRemaining = 244;
-            }
-
-            // Always reset ghosts on ANY round end (death-wipe or board-clear).
-            const now = Date.now();
-            resetGhostModeSchedule(now);
-            initGhosts(now);
-            freezeGhostsForIntro();
-            broadcastGhostSnapshot(true);
-
-            if (DEBUG_GHOSTS) {
-                console.log("[ROUND] RoundEnded -> reset positions", {
-                    clearedBoard,
-                    round: currentGame.round,
-                    respawn,
-                    dotsRemaining: currentGame.dotsRemaining,
-                });
-            }
-
-            io.emit("RoundEnded", { respawn, round: currentGame.round });
+            endRoundFromServer()
         });
 
         socket.on("GhostSnapshotRequest", () => {

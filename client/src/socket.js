@@ -16,13 +16,23 @@ const initializeSocket = () => {
     if (!window.socket) {
         const playerId = getOrCreatePlayerId();
 
-        window.socket = io({
-            transports: ["websocket"],          // optional but helps with ngrok weirdness
-            auth: { playerId },                 // send stable identity
+        const isDev =
+            window.location.hostname === "localhost" ||
+            window.location.hostname === "127.0.0.1";
+
+        const socketUrl = isDev
+            ? "http://localhost:5177"   // 👈 your local socket server
+            : window.location.origin;   // 👈 prod (same origin)
+
+        window.socket = io(socketUrl, {
+            transports: ["websocket"],
+            auth: { playerId },
             reconnection: true,
         });
     }
+
     return window.socket;
 };
+
 
 export default initializeSocket();

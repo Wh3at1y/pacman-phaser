@@ -74,6 +74,22 @@ export default class Player {
         this.netInterpDelayMs = 110; // render slightly in the past to interpolate cleanly
         this._lastRenderX = this.sprite.x;
         this._lastRenderY = this.sprite.y;
+        // Name tag under Pac-Man
+        this.nameText = this.scene.add.text(
+            this.sprite.x,
+            this.sprite.y + scene.TILE_SIZE * 0.9,
+            opts.playerName,
+            {
+                fontFamily: "monospace",
+                fontSize: "12px",
+                color: "#ffffff",
+                stroke: "#000000",
+                strokeThickness: 3,
+            }
+        );
+
+        this.nameText.setOrigin(0.5, 0); // centered, anchored at top
+        this.nameText.setDepth(5000);    // above the maze/actors
     }
 
     // Arrow* string -> vector
@@ -266,7 +282,102 @@ export default class Player {
         this.graphics.setAlpha(isSpectator ? 0.25 : 1);
     }
 
+    explode() {
+        this.nameText?.setVisible(false);
+        const scene = this.scene;
+        const x0 = this.sprite.x;
+        const y0 = this.sprite.y;
+
+        // Hide Pac-Man immediately
+        if (this.graphics) this.graphics.setVisible(false);
+
+        const g = scene.add.graphics();
+        g.setDepth(2000);
+
+        // ===== TURN THESE UP FOR MORE CHAOS =====
+        const basePixelSize = 4;      // was ~3
+        const maxPixelSize = 7;       // BIG CHUNKS
+        const count = 260;            // MORE PIXELS (was ~120)
+        const lifetimeMs = 1250;       // slightly longer
+        const gravity = 100;          // heavier fall
+        const spread = 1.35;          // wider blast
+        const ringRadiusBoost = 40;   // bigger shockwave
+        // =======================================
+
+        const shards = [];
+
+        for (let i = 0; i < count; i++) {
+            const ang = Math.random() * Math.PI * 2;
+            const spd = (180 + Math.random() * 420) * spread;
+
+            const size =
+                basePixelSize +
+                Math.random() * (maxPixelSize - basePixelSize);
+
+            shards.push({
+                x: x0 + (Math.random() - 0.5) * this.radius,
+                y: y0 + (Math.random() - 0.5) * this.radius,
+                vx: Math.cos(ang) * spd,
+                vy: Math.sin(ang) * spd,
+                size,
+                flash: Math.random() < 0.22,
+                a: 1,
+            });
+        }
+
+        const start = scene.time.now;
+
+        // Stronger impact
+        scene.cameras.main.shake(140, 0.012);
+
+        const step = () => {
+            const now = scene.time.now;
+            const t = (now - start) / lifetimeMs;
+
+            if (t >= 1) {
+                scene.events.off("postupdate", step);
+                g.destroy();
+                return;
+            }
+
+            const dt = scene.game.loop.delta / 1000;
+            g.clear();
+
+            // BIG expanding shock ring
+            g.lineStyle(4, 0xffffff, 1 - t);
+            g.strokeCircle(x0, y0, this.radius + t * ringRadiusBoost);
+
+            for (const p of shards) {
+                // physics
+                p.vy += gravity * dt;
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+
+                p.a = Math.max(0, 1 - t);
+
+                const size = p.size * (1 - t * 0.6);
+
+                if (p.flash && t < 0.35) {
+                    g.fillStyle(0xffffff, p.a);
+                } else {
+                    g.fillStyle(this.color, p.a);
+                }
+
+                g.fillRect(
+                    p.x - size / 2,
+                    p.y - size / 2,
+                    size,
+                    size
+                );
+            }
+        };
+
+        scene.events.on("postupdate", step);
+    }
+
+
     resetToSpawn() {
+        this.nameText?.setVisible(true);
         const TS = this.scene.TILE_SIZE;
         this.tileX = this.spawnTile.x;
         this.tileY = this.spawnTile.y;
@@ -295,6 +406,10 @@ export default class Player {
             // but for your rules: dead should just sit there.
             return;
         }
+        if (this.nameText) {
+            this.nameText.setPosition(this.sprite.x, this.sprite.y + this.scene.TILE_SIZE * 0.9);
+        }
+
         // Remote players: no grid sim, just interpolate.
         if (this.isRemote) {
             const moved = this._applyRemoteInterpolation();
